@@ -11,6 +11,7 @@
 - Added an in-memory WireGuard profile builder that accepts only a verified relay node and short-lived session lease, supports IPv4/IPv6, rejects broad/default routes, and zeroizes private key/profile buffers on drop. It does not install a Windows service or change routes; no relay endpoint or session issuer is available yet.
 - Added a durable relay lifecycle journal with ordered setup phases, a protected opaque restore snapshot, and failure retention until restore is confirmed. Startup recovery can enumerate interrupted sessions; no Windows route restore adapter is connected yet.
 - Added a relay coordinator that orders tunnel startup, scoped route activation, and rollback behind an injectable backend. A heartbeat watchdog, startup recovery, and retryable restore failures are covered by fake-backend tests; no production Windows backend is connected.
+- Added a test-only Cloudflare BoringTun client/relay exchange over ephemeral loopback UDP sockets. It completes a WireGuard handshake, encrypts a valid IPv4 UDP packet, verifies the relay can decrypt it, and returns an encrypted echo; no virtual adapter or host route is created.
 
 ### Added
 
