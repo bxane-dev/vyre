@@ -1,3 +1,4 @@
+mod frames;
 mod network;
 mod priority;
 mod routing;
@@ -278,6 +279,98 @@ fn trace_route() -> Result<String, String> {
     routing::trace_direct_route()
 }
 
+#[tauri::command]
+fn capture_frames(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    pid: u32,
+) -> Result<frames::FrameCapture, String> {
+    const SECONDS: u32 = 15;
+    let game = state
+        .monitor
+        .snapshot(&custom_games(&state)?)
+        .games
+        .into_iter()
+        .find(|game| game.pid == pid)
+        .ok_or("Select a running detected game before capturing frame data.")?;
+    if !state.monitor.process_matches(game.pid, game.started_at) {
+        return Err("The selected game exited before capture started.".into());
+    }
+    let resource_dir = app.path().resource_dir().map_err(|err| err.to_string())?;
+    let packaged = resource_dir.join("PresentMon-2.6.0-x64.exe");
+    let resource_subdir = resource_dir.join("resources/PresentMon-2.6.0-x64.exe");
+    let portable = std::env::current_exe().ok().and_then(|path| {
+        path.parent()
+            .map(|parent| parent.join("resources/PresentMon-2.6.0-x64.exe"))
+    });
+    let executable = [
+        Some(packaged),
+        Some(resource_subdir),
+        portable,
+        Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/PresentMon-2.6.0-x64.exe")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|path| path.is_file())
+    .ok_or("The bundled PresentMon capture tool is missing.")?;
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| err.to_string())?
+        .join("frames");
+    std::fs::create_dir_all(&directory)
+        .map_err(|err| format!("Could not create capture folder: {err}"))?;
+    let csv_path = directory.join(format!(
+        "vyre-frames-{}-{}.csv",
+        game.pid,
+        Utc::now().format("%Y%m%d-%H%M%S")
+    ));
+    let mut command = std::process::Command::new(executable);
+    command
+        .args(["--process_id", &game.pid.to_string(), "--output_file"])
+        .arg(&csv_path)
+        .args([
+            "--exclude_dropped",
+            "--timed",
+            &SECONDS.to_string(),
+            "--terminate_after_timed",
+            "--no_console_stats",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Could not start PresentMon: {err}"))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(SECONDS as u64 + 10);
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|err| format!("PresentMon capture failed: {err}"))?
+        {
+            if !status.success() {
+                return Err("PresentMon could not start a Windows frame trace. Windows may restrict tracing for this account or game.".into());
+            }
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("PresentMon did not finish the 15-second capture in time.".into());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    if !state.monitor.process_matches(game.pid, game.started_at) {
+        let _ = std::fs::remove_file(&csv_path);
+        return Err("The game exited during capture. No frame result was saved.".into());
+    }
+    frames::parse_capture(&csv_path, game.name, game.pid, SECONDS)
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .setup(|app| {
@@ -307,7 +400,8 @@ pub fn run() {
             restore_everything,
             export_report,
             traffic_connections,
-            trace_route
+            trace_route,
+            capture_frames
         ])
         .build(tauri::generate_context!())
         .expect("failed to build vyre");

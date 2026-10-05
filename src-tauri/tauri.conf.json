@@ -5,5 +5,5 @@
   "identifier": "app.vyre.desktop",
   "build": { "beforeDevCommand": "pnpm.cmd dev", "devUrl": "http://localhost:1420", "beforeBuildCommand": "pnpm.cmd build", "frontendDist": "../dist" },
   "app": { "windows": [{ "title": "vyre", "center": true, "width": 1440, "height": 900, "minWidth": 1050, "minHeight": 700, "backgroundColor": "#080b10" }], "security": { "csp": null } },
-  "bundle": { "active": true, "targets": ["nsis"], "icon": [] }
+  "bundle": { "active": true, "targets": ["nsis"], "icon": [], "resources": ["resources/PresentMon-2.6.0-x64.exe", "resources/PresentMon-LICENSE.txt"] }
 }

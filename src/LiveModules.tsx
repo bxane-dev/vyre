@@ -14,6 +14,8 @@ type Props = {
   connections: Connection[];
   trace: string | null;
   result: Benchmark | null;
+  frameCapture: FrameCapture | null;
+  onCaptureFrames: () => void;
   onSelectGame: (pid: number) => void;
   onMode: (mode: string) => void;
   onBoost: () => void;
@@ -21,21 +23,27 @@ type Props = {
   onConnections: () => void;
   onTrace: () => void;
 };
+type FrameCapture = { game: string; pid: number; frameCount: number; averageFps: number; onePercentLow: number; pointOnePercentLow: number; captureSeconds: number; csvPath: string };
 const measure = (value: number | null | undefined, unit: string, decimals = 1) => value == null ? '—' : `${value.toFixed(decimals)}${unit}`;
 
 export default function LiveModules(props: Props) {
-  const { section, machine, probe, networkScore, mode, selectedPid, activeChanges, busy, isTauri, connections, trace, result, onSelectGame, onMode, onBoost, onRestore, onConnections, onTrace } = props;
+  const { section, machine, probe, networkScore, mode, selectedPid, activeChanges, busy, isTauri, connections, trace, result, frameCapture, onCaptureFrames, onSelectGame, onMode, onBoost, onRestore, onConnections, onTrace } = props;
   if (section === 'Performance') return <>
     <div className="module-metrics">
       <div className="panel module-metric"><Cpu size={19}/><span>CPU LOAD</span><strong>{measure(machine?.cpuPercent, '%', 0)}</strong><small>System-wide utilization</small></div>
       <div className="panel module-metric"><MemoryStick size={19}/><span>RAM PRESSURE</span><strong>{measure(machine?.ramPercent, '%', 0)}</strong><small>{machine ? `${machine.ramUsedGb.toFixed(1)} / ${machine.ramTotalGb.toFixed(1)} GB in use` : 'System memory'}</small></div>
-      <div className="panel module-metric"><Gauge size={19}/><span>FRAME DATA</span><strong>—</strong><small>PresentMon is not connected</small></div>
+      <div className="panel module-metric"><Gauge size={19}/><span>FRAME DATA</span><strong>{frameCapture ? `${frameCapture.averageFps.toFixed(0)} FPS` : '—'}</strong><small>{frameCapture ? `${frameCapture.frameCount.toLocaleString()} displayed frames captured` : 'Capture a running game below'}</small></div>
     </div>
     <div className="panel module-panel"><div className="panel-head"><div><h3>Processes by CPU use</h3><p>Current process sample from Windows</p></div><Cpu size={18}/></div>
       {machine?.topProcesses.length ? <div className="module-list">{machine.topProcesses.map(process => <div className="module-process" key={process.pid}><div><b>{process.name}</b><small>PID {process.pid} · {process.memoryMb.toFixed(0)} MB RAM</small></div><strong>{process.cpuPercent.toFixed(1)}%</strong></div>)}</div> : <p className="module-empty">Waiting for a process sample.</p>}
       <p className="fine-print">Process CPU percentages use a single core as 100%, so a multi-core game can exceed 100%.</p>
     </div>
-    <div className="panel info-panel"><h3>Frame-time capture</h3><p>FPS, 1% lows, GPU utilization, and stutter correlation need a PresentMon integration. vyre shows no estimated values for them.</p></div>
+    <div className="panel module-panel"><div className="panel-head"><div><h3>PresentMon frame capture</h3><p>Capture 15 seconds from a detected game process</p></div><Gauge size={18}/></div>
+      <label className="module-label">RUNNING GAME<select value={selectedPid ?? ''} onChange={event => onSelectGame(Number(event.target.value))} disabled={!machine?.games.length}>{machine?.games.length ? machine.games.map(game => <option value={game.pid} key={game.pid}>{game.name} · PID {game.pid}</option>) : <option value="">No game detected</option>}</select></label>
+      <button className="button primary" disabled={!selectedPid || busy || !isTauri} onClick={onCaptureFrames}><Gauge size={16}/> Capture frame data</button>
+      {frameCapture && <><div className="route-readings frame-readings"><div><span>AVERAGE FPS</span><b>{frameCapture.averageFps.toFixed(1)}</b></div><div><span>1% LOW</span><b>{frameCapture.onePercentLow.toFixed(1)}</b></div><div><span>0.1% LOW</span><b>{frameCapture.pointOnePercentLow.toFixed(1)}</b></div><div><span>DISPLAYED FRAMES</span><b>{frameCapture.frameCount.toLocaleString()}</b></div></div><p className="fine-print">{frameCapture.game} · {frameCapture.captureSeconds}s capture. Lows use the 99th and 99.9th percentile displayed frame time.</p><p className="fine-print">Raw CSV: {frameCapture.csvPath}</p></>}
+      <p className="fine-print">Capture uses Microsoft's Windows event tracing through PresentMon. Windows may deny capture for some accounts or protected games; vyre does not elevate itself.</p>
+    </div>
   </>;
 
   if (section === 'Traffic') return <>

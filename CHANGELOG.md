@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- 15-second PresentMon capture for a selected running game, with average FPS, percentile-derived 1% and 0.1% lows, and saved raw CSV.
+- Bundled, Authenticode-signed PresentMon 2.6.0 console executable and its MIT license. Capture runs at the current user's privilege and reports Windows trace access failures.
+
+### Limits
+
+- Frame capture requires Windows to allow the current user to start an ETW trace. Some protected games or accounts may deny it. No automatic elevation is requested.
+- GPU utilization, temperatures, and persistent frame history are not included in this capture milestone.
+
 ## 0.1.0 — 2026-10-04
 
 Initial Windows desktop release.

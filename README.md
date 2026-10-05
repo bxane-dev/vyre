@@ -48,7 +48,7 @@ The interface invokes only named Rust commands. It does not expose a general she
 
 - Live probe ping, jitter, and packet loss to **1.1.1.1** using Windows `ping.exe`. These values are **not game-server latency**. Parse failures are shown as unavailable.
 - CPU, RAM, whole-system network transfer rates, and highest-CPU processes from `sysinfo`.
-- Performance page with CPU, RAM, and per-process CPU and memory readings.
+- Performance page with CPU, RAM, per-process CPU and memory readings, and an on-demand 15-second PresentMon capture for a selected game. Capture shows average FPS, percentile-derived 1% and 0.1% lows, and keeps the raw CSV under the app data `frames` folder.
 - Traffic page with adapter transfer rates and current TCP connection ownership by process. Connection counts are not per-process bandwidth usage.
 - Smart Route page with measured direct-route quality and a Windows trace to the probe target. No relay route is advertised.
 - Optimizations page with working Safe and Competitive controls, a detected-game selector, benchmark result, and restore action.
@@ -64,7 +64,9 @@ The network score is a simple local indicator based on probe ping, jitter, and l
 
 ## Planned, not active
 
-PresentMon frame capture, 1% and 0.1% lows, GPU/VRAM/temperature sensors, per-process bandwidth, QoS and bandwidth shaping, bufferbloat under load, MTU and DNS tests, external overlay, relay nodes, game-only tunneling, privileged Windows service, updater, and code signing. Existing pages identify these limits without displaying invented readings or controls that appear to work.
+GPU/VRAM/temperature sensors, per-process bandwidth, QoS and bandwidth shaping, bufferbloat under load, MTU and DNS tests, external overlay, relay nodes, game-only tunneling, privileged Windows service, updater, and VYRE code signing. Existing pages identify these limits without displaying invented readings or controls that appear to work.
+
+Frame capture bundles PresentMon 2.6.0 from the official [GameTechDev/PresentMon release](https://github.com/GameTechDev/PresentMon/releases/tag/v2.6.0) and includes its MIT license at `src-tauri/resources/PresentMon-LICENSE.txt`. PresentMon records displayed frame timing through Windows event tracing; Windows permissions and game protection can prevent capture. VYRE does not auto-elevate.
 
 Future privileged features should run in a separate least-privilege Windows service. The service should authenticate a local IPC client, validate an allowlisted command schema, persist a write-ahead restore journal before changes, and reject operations on protected processes. A relay requires real deployed nodes, mutual authentication, encryption, and route benchmarks against actual destinations before it can claim route improvement.
 
