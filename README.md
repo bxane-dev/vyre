@@ -52,6 +52,7 @@ The interface invokes only named Rust commands. It does not expose a general she
 - Traffic page with adapter transfer rates and current TCP connection ownership by process. Connection counts are not per-process bandwidth usage.
 - Smart Route page with measured direct-route quality and a Windows trace to the probe target. No relay route is advertised.
 - Optimizations page with working Safe and Competitive controls, a detected-game selector, benchmark result, and restore action.
+- Safe and Competitive mode preference saved per game. The selection loads for the active game; BOOST GAME remains the explicit apply action.
 - Automatic detection for common game EXE names plus custom EXE paths. Minecraft Java is reported only when its command line identifies Minecraft.
 - Safe mode: baseline and follow-up probes with no system change.
 - Competitive mode: saves the original priority, then sets a detected game process to **Above Normal**. The setting is temporary. A SQLite journal supports restore on game close, normal exit, manual restore, or next launch after a crash.

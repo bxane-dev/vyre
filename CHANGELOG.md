@@ -4,6 +4,7 @@
 
 ### Added
 
+- SQLite-backed Safe and Competitive mode preferences per game. Selecting a detected game loads its saved profile; applying the profile remains a manual action.
 - Persist up to 100 frame capture summaries in local SQLite and compare each game capture with its previous sample.
 - 15-second PresentMon capture for a selected running game, with average FPS, percentile-derived 1% and 0.1% lows, and saved raw CSV.
 - Bundled, Authenticode-signed PresentMon 2.6.0 console executable and its MIT license. Capture runs at the current user's privilege and reports Windows trace access failures.

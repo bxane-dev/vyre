@@ -1,5 +1,5 @@
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::Path;
 
@@ -44,6 +44,8 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     let connection = Connection::open(path).map_err(|err| err.to_string())?;
     connection.execute_batch("PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS custom_games (id INTEGER PRIMARY KEY, name TEXT NOT NULL, exe TEXT NOT NULL UNIQUE);
+        CREATE TABLE IF NOT EXISTS game_profiles (exe TEXT PRIMARY KEY, game TEXT NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('Safe','Competitive')));
+        CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, change TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS frame_sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, pid INTEGER NOT NULL, frame_count INTEGER NOT NULL, average_fps REAL NOT NULL, one_percent_low REAL NOT NULL, point_one_percent_low REAL NOT NULL, capture_seconds INTEGER NOT NULL, csv_path TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS change_journal (pid INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, original_priority INTEGER NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL);")
@@ -64,6 +66,38 @@ pub fn custom_games(db: &Connection) -> Result<Vec<(String, String)>, String> {
 
 pub fn add_game(db: &Connection, name: &str, exe: &str) -> Result<(), String> {
     db.execute("INSERT INTO custom_games(name, exe) VALUES(?1, ?2) ON CONFLICT(exe) DO UPDATE SET name=excluded.name", params![name, exe]).map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+pub fn game_profile(db: &Connection, exe: &str) -> Result<Option<String>, String> {
+    db.query_row(
+        "SELECT mode FROM game_profiles WHERE exe=?1",
+        params![exe],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|err| err.to_string())
+}
+
+pub fn save_game_profile(db: &Connection, game: &str, exe: &str, mode: &str) -> Result<(), String> {
+    db.execute("INSERT INTO game_profiles(exe,game,mode) VALUES(?1,?2,?3) ON CONFLICT(exe) DO UPDATE SET game=excluded.game, mode=excluded.mode", params![exe, game, mode])
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+pub fn default_mode(db: &Connection) -> Result<Option<String>, String> {
+    db.query_row(
+        "SELECT value FROM app_settings WHERE key='default_mode'",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|err| err.to_string())
+}
+
+pub fn save_default_mode(db: &Connection, mode: &str) -> Result<(), String> {
+    db.execute("INSERT INTO app_settings(key,value) VALUES('default_mode',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![mode])
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 

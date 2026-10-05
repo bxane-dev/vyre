@@ -98,8 +98,42 @@ fn set_mode(state: State<AppState>, mode: String) -> Result<(), String> {
     if mode != "Safe" && mode != "Competitive" {
         return Err("This mode is not implemented yet.".into());
     }
+    storage::save_default_mode(&*state.db.lock().map_err(|err| err.to_string())?, &mode)?;
     *state.mode.lock().map_err(|err| err.to_string())? = mode;
     Ok(())
+}
+
+fn detected_game(state: &AppState, pid: u32) -> Result<Game, String> {
+    state
+        .monitor
+        .snapshot(&custom_games(state)?)
+        .games
+        .into_iter()
+        .find(|game| game.pid == pid)
+        .ok_or_else(|| "Game process is no longer running.".to_string())
+}
+
+#[tauri::command]
+fn get_game_profile(state: State<AppState>, pid: u32) -> Result<String, String> {
+    let game = detected_game(&state, pid)?;
+    Ok(
+        storage::game_profile(&*state.db.lock().map_err(|err| err.to_string())?, &game.exe)?
+            .unwrap_or(state.mode.lock().map_err(|err| err.to_string())?.clone()),
+    )
+}
+
+#[tauri::command]
+fn set_game_profile(state: State<AppState>, pid: u32, mode: String) -> Result<(), String> {
+    if mode != "Safe" && mode != "Competitive" {
+        return Err("This mode is not implemented yet.".into());
+    }
+    let game = detected_game(&state, pid)?;
+    storage::save_game_profile(
+        &*state.db.lock().map_err(|err| err.to_string())?,
+        &game.name,
+        &game.exe,
+        &mode,
+    )
 }
 
 #[tauri::command]
@@ -170,7 +204,8 @@ fn boost_game(state: State<AppState>, pid: u32) -> Result<BenchmarkResult, Strin
         .into_iter()
         .find(|game| game.pid == pid)
         .ok_or("Game process is no longer running.")?;
-    let mode = state.mode.lock().map_err(|err| err.to_string())?.clone();
+    let mode = storage::game_profile(&*state.db.lock().map_err(|err| err.to_string())?, &game.exe)?
+        .unwrap_or(state.mode.lock().map_err(|err| err.to_string())?.clone());
     let before = measure(8, Duration::from_millis(700));
     let mut warning = None;
     let change = if mode == "Competitive" {
@@ -249,7 +284,7 @@ fn export_report(app: tauri::AppHandle, state: State<AppState>) -> Result<String
         "detectedGames": machine.games.iter().map(|game| &game.name).collect::<Vec<_>>(),
         "topProcesses": machine.top_processes,
         "activeTemporaryChanges": active_changes,
-        "limitations": ["Probe target is not a game server", "No FPS or bufferbloat measurements in this version", "No relay nodes are deployed"]
+        "limitations": ["Probe target is not a game server", "FPS is available only through an on-demand 15-second capture; no continuous overlay is included", "No bufferbloat test or relay nodes are available"]
     });
     let directory = app
         .path()
@@ -383,10 +418,13 @@ pub fn run() {
         .setup(|app| {
             let db_path = app.path().app_data_dir()?.join("vyre.sqlite3");
             let db = storage::open(&db_path).map_err(std::io::Error::other)?;
+            let default_mode = storage::default_mode(&db)
+                .map_err(std::io::Error::other)?
+                .unwrap_or_else(|| "Safe".into());
             app.manage(AppState {
                 db: Mutex::new(db),
                 monitor: SystemMonitor::new(),
-                mode: Mutex::new("Safe".into()),
+                mode: Mutex::new(default_mode),
             });
             let handle = app.handle().clone();
             // Crash recovery: replay any persisted priority changes from the prior run.
@@ -400,6 +438,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             snapshot,
             set_mode,
+            get_game_profile,
+            set_game_profile,
             add_custom_game,
             run_diagnostic,
             boost_game,

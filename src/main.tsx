@@ -47,6 +47,7 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [frameSessions, setFrameSessions] = useState<FrameSession[]>([]);
   const [selectedPid, setSelectedPid] = useState<number | null>(null);
+  const [profileMode, setProfileMode] = useState('Safe');
   const [gameName, setGameName] = useState('');
   const [gameExe, setGameExe] = useState('');
   const [showGameForm, setShowGameForm] = useState(false);
@@ -68,6 +69,7 @@ function App() {
   useEffect(() => { if (!isTauri) return; void refresh(); const timer = window.setInterval(() => { if (!busy) void refresh(); }, 4000); return () => window.clearInterval(timer); }, [busy, isTauri]);
   useEffect(() => { if (section === 'History' || section === 'Statistics') void loadHistory(); }, [section]);
   useEffect(() => { if (section === 'Traffic' && isTauri) void refreshConnections(); }, [section, isTauri]);
+  useEffect(() => { if (selectedPid == null) { setProfileMode(data?.mode ?? 'Safe'); return; } let active = true; void invoke<string>('get_game_profile', { pid: selectedPid }).then(mode => { if (active) setProfileMode(mode); }).catch(cause => { if (active) setError(String(cause)); }); return () => { active = false; }; }, [selectedPid, isTauri]);
   const activeGame = data?.machine.games.find(game => game.pid === selectedPid) ?? null;
   const title = section === 'Dashboard' ? 'Your game, in focus.' : section;
   const subtitles: Record<string, string> = {
@@ -94,7 +96,7 @@ function App() {
     try { setDiagnosis(await invoke<Diagnosis>('run_diagnostic')); await refresh(); } catch (cause) { setError(String(cause)); } finally { setBusy(null); }
   }
   async function changeMode(mode: string) {
-    try { await invoke('set_mode', { mode }); setNotice(`${mode} mode selected.`); await refresh(); } catch (cause) { setError(String(cause)); }
+    try { if (selectedPid != null) await invoke('set_game_profile', { pid: selectedPid, mode }); else await invoke('set_mode', { mode }); setProfileMode(mode); setNotice(`${mode} profile saved${activeGame ? ` for ${activeGame.name}` : ''}.`); if (selectedPid == null) await refresh(); } catch (cause) { setError(String(cause)); }
   }
   async function saveGame(event: React.FormEvent) {
     event.preventDefault(); setError(null);
@@ -131,7 +133,7 @@ function App() {
   const historyRows = useMemo(() => sessions.map(session => ({ ...session, before: JSON.parse(session.beforeJson) as Probe, after: JSON.parse(session.afterJson) as Probe })), [sessions]);
 
   return <div className="app-shell"><aside className="sidebar"><div className="brand"><img className="brand-logo" src={vyreLogo} alt="vyre"/><span className="brand-tagline">PERFORMANCE ENGINE</span></div><div className="side-label">WORKSPACE</div><nav>{sections.map(item => <button key={item.title} className={`nav-item ${section === item.title ? 'active' : ''}`} onClick={() => setSection(item.title)}><item.icon size={18}/><span>{item.title}</span></button>)}</nav><div className="side-bottom"><div className="safety-card"><ShieldCheck size={18}/><div><b>Safe by design</b><span>External monitoring. Reversible changes.</span></div></div><div className="version">VYRE 0.1.0</div></div></aside>
-    <main className="main"><header className="topbar"><div className="breadcrumb">OVERVIEW <span>/</span> {section.toUpperCase()}</div><div className="top-actions"><span className={`live-dot ${data && !error ? 'on' : ''}`}/><span>{stateTag}</span><div className="top-divider"/><span className="mode-pill"><ShieldCheck size={13}/>{data?.mode ?? 'Safe'} mode</span></div></header><div className="content"><div className="page-heading"><div><div className="eyebrow">VYRE / {section.toUpperCase()}</div><h1>{title}</h1><p>{subtitle}</p></div>{section === 'Dashboard' && <div className="heading-right"><span className="light-dot"/> {activeGame ? `${activeGame.name} detected` : 'No supported game detected'}</div>}</div>
+    <main className="main"><header className="topbar"><div className="breadcrumb">OVERVIEW <span>/</span> {section.toUpperCase()}</div><div className="top-actions"><span className={`live-dot ${data && !error ? 'on' : ''}`}/><span>{stateTag}</span><div className="top-divider"/><span className="mode-pill"><ShieldCheck size={13}/>{profileMode} mode</span></div></header><div className="content"><div className="page-heading"><div><div className="eyebrow">VYRE / {section.toUpperCase()}</div><h1>{title}</h1><p>{subtitle}</p></div>{section === 'Dashboard' && <div className="heading-right"><span className="light-dot"/> {activeGame ? `${activeGame.name} detected` : 'No supported game detected'}</div>}</div>
     {!isTauri && <div className="notice warn"><CircleHelp size={17}/> Open this project with <code>pnpm tauri dev</code> on Windows to connect the live backend. Browser preview contains no simulated data.</div>}
     {error && <div className="notice error"><X size={17}/>{error}<button onClick={() => setError(null)} aria-label="Dismiss error"><X size={16}/></button></div>}
     {notice && <div className="notice success"><CheckCircle2 size={17}/>{notice}<button onClick={() => setNotice(null)} aria-label="Dismiss notice"><X size={16}/></button></div>}
@@ -152,7 +154,7 @@ function App() {
       machine={data?.machine}
       probe={data?.probe}
       networkScore={data?.networkScore}
-      mode={data?.mode}
+      mode={profileMode}
       selectedPid={selectedPid}
       activeChanges={data?.activeChanges}
       busy={!!busy}
@@ -169,7 +171,7 @@ function App() {
       onTrace={() => void runTrace()}
       onCaptureFrames={() => void captureFrames()}
     />
-    {section === 'Settings' && <><div className="panel settings-panel"><div className="panel-head"><div><h3>Optimization mode</h3><p>Choose which actions BOOST GAME may apply.</p></div></div><div className="mode-options">{['Safe', 'Competitive', 'Maximum', 'Custom'].map(mode => <button key={mode} className={`mode-option ${data?.mode === mode ? 'selected' : ''}`} disabled={mode === 'Maximum' || mode === 'Custom' || !isTauri} onClick={() => changeMode(mode)}><span><b>{mode}</b><small>{mode === 'Safe' ? 'Measure only. No system changes.' : mode === 'Competitive' ? 'Temporary Above Normal process priority.' : 'Not available in this version.'}</small></span>{data?.mode === mode ? <CheckCircle2 size={18}/> : mode === 'Maximum' || mode === 'Custom' ? <Clock3 size={17}/> : <ArrowRight size={17}/>}</button>)}</div></div><div className="panel info-panel"><h3>Local-first privacy</h3><p>Probe measurements and sessions stay in vyre’s local SQLite database. No telemetry account or cloud upload is included.</p></div></>}
+    {section === 'Settings' && <><div className="panel settings-panel"><div className="panel-head"><div><h3>{activeGame ? `${activeGame.name} profile` : 'Default optimization mode'}</h3><p>{activeGame ? 'Saved for this game and loaded when you select it. BOOST GAME is still manual.' : 'Choose which actions BOOST GAME may apply when no game is selected.'}</p></div></div><div className="mode-options">{['Safe', 'Competitive', 'Maximum', 'Custom'].map(mode => <button key={mode} className={`mode-option ${profileMode === mode ? 'selected' : ''}`} disabled={mode === 'Maximum' || mode === 'Custom' || !isTauri} onClick={() => changeMode(mode)}><span><b>{mode}</b><small>{mode === 'Safe' ? 'Measure only; make no system change.' : mode === 'Competitive' ? 'Temporary Above Normal process priority.' : 'Not available in this version.'}</small></span>{profileMode === mode ? <CheckCircle2 size={18}/> : mode === 'Maximum' || mode === 'Custom' ? <Clock3 size={17}/> : <ArrowRight size={17}/>}</button>)}</div></div><div className="panel info-panel"><h3>Local-first privacy</h3><p>Game profiles, probe measurements, and session history stay in vyre’s local SQLite database. No telemetry account or cloud upload is included.</p></div></>}
     {section === 'Restore' && <div className="panel restore-panel"><div className="restore-symbol"><RotateCcw size={31}/></div><h2>Restore everything</h2><p>Return any running game process priority changed by vyre to its saved original value. Restore also runs on normal app exit, game exit, and next launch after a crash.</p><div className="restore-count"><span>ACTIVE TEMPORARY CHANGES</span><strong>{data?.activeChanges ?? '—'}</strong></div><button className="button primary" disabled={!!busy || !isTauri || !data?.activeChanges} onClick={restore}><RotateCcw size={17}/> RESTORE EVERYTHING</button></div>}
     <footer className="footer"><span><ShieldCheck size={14}/> No game injection or packet modification</span><span>Last sample {data ? new Date(data.at).toLocaleTimeString() : '—'}</span></footer></div></main></div>;
 }
