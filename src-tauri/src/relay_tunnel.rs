@@ -131,7 +131,7 @@ fn validate_key(key: &str) -> Result<(), ()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::relay_manifest::{
         verify_manifest, RelayManifest, RelayNode, SignedManifestEnvelope,
@@ -182,6 +182,14 @@ mod tests {
             interface_addresses: vec!["10.8.0.2/32".parse().unwrap()],
             allowed_prefixes: vec![prefix.parse().unwrap()],
         }
+    }
+
+    pub(crate) fn coordinator_fixture() -> TunnelConfig {
+        build_config(
+            &verified_manifest("relay.example.net"),
+            &lease("203.0.113.9/32"),
+        )
+        .unwrap()
     }
 
     #[test]

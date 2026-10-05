@@ -3,6 +3,7 @@ mod network;
 mod priority;
 pub mod relay;
 pub mod relay_client;
+pub mod relay_coordinator;
 pub mod relay_lifecycle;
 pub mod relay_manifest;
 pub mod relay_tunnel;
