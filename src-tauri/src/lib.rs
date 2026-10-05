@@ -2,6 +2,7 @@ mod frames;
 mod network;
 mod priority;
 pub mod relay;
+pub mod relay_client;
 pub mod relay_manifest;
 mod routing;
 mod storage;

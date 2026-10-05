@@ -85,7 +85,7 @@ This document completes the architecture decision portion of Phase 7. The remain
 ## Implementation order
 
 1. The relay-independent score model and deterministic tests are implemented in `src-tauri/src/relay.rs`; it remains disconnected from the UI until real comparable measurements can feed it.
-2. Signed node-manifest parsing, pinned Ed25519 verification, schema checks, expiry, and generation rollback checks are implemented in `src-tauri/src/relay_manifest.rs`. A signed application build must still provide the actual trusted public keys and persist the last accepted generation before fetching and displaying candidates.
+2. Signed node-manifest parsing, pinned Ed25519 verification, schema checks, expiry, and generation rollback checks are implemented in `src-tauri/src/relay_manifest.rs`. `src-tauri/src/relay_client.rs` adds the HTTPS-only, exact-host, no-redirect fetch and bounded body path; SQLite stores the signed envelope and accepted generation and cached data is re-verified before reuse. The fetch path is not invoked because this build has no production endpoint or trusted public keys.
 3. Prototype the service-to-tunnel lifecycle against a local test relay, first with an explicit destination prefix and a watchdog restore journal.
 4. Evaluate process-aware WFP routing, IPv4/IPv6 and DNS behavior, and anti-cheat conflicts. Do not enable game-only routing until that evaluation is successful.
 5. Add Smart Route UI only after the route comparison command returns measured candidate data. Keep all relay pages in a clear unavailable state until a deployed node and passing acceptance gates are present.

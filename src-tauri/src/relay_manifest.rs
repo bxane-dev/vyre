@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
 const DOMAIN: &[u8] = b"VYRE-RELAY-MANIFEST-V1\0";
-const MAX_ENVELOPE_BYTES: usize = 400 * 1024;
+pub const MAX_SIGNED_MANIFEST_BYTES: usize = 400 * 1024;
 const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
 const MAX_NODES: usize = 64;
 const MAX_MANIFEST_TTL_SECONDS: u64 = 24 * 60 * 60;
@@ -45,11 +45,25 @@ pub struct RelayNode {
     pub protocol: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedManifest {
-    pub signer_key_id: String,
-    pub manifest: RelayManifest,
+    signer_key_id: String,
+    manifest: RelayManifest,
+    signed_envelope: Vec<u8>,
+}
+
+impl VerifiedManifest {
+    pub fn signer_key_id(&self) -> &str {
+        &self.signer_key_id
+    }
+
+    pub fn manifest(&self) -> &RelayManifest {
+        &self.manifest
+    }
+
+    pub(crate) fn signed_envelope(&self) -> &[u8] {
+        &self.signed_envelope
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +82,7 @@ pub enum ManifestError {
     GenerationRollback,
     InvalidTimeWindow,
     ManifestExpired,
+    GenerationOutOfRange,
     TooManyNodes,
     NoNodes,
     InvalidNodeId,
@@ -99,6 +114,7 @@ impl std::fmt::Display for ManifestError {
             }
             Self::InvalidTimeWindow => "Manifest time window is invalid.",
             Self::ManifestExpired => "Manifest has expired or is not yet valid.",
+            Self::GenerationOutOfRange => "Manifest generation is outside the supported range.",
             Self::TooManyNodes => "Manifest contains too many nodes.",
             Self::NoNodes => "Manifest contains no relay nodes.",
             Self::InvalidNodeId => "Relay node identifier is invalid.",
@@ -129,7 +145,7 @@ pub fn verify_manifest(
     now_unix: u64,
     minimum_generation: u64,
 ) -> Result<VerifiedManifest, ManifestError> {
-    if envelope_bytes.len() > MAX_ENVELOPE_BYTES {
+    if envelope_bytes.len() > MAX_SIGNED_MANIFEST_BYTES {
         return Err(ManifestError::EnvelopeTooLarge);
     }
     let envelope: SignedManifestEnvelope =
@@ -171,6 +187,7 @@ pub fn verify_manifest(
     Ok(VerifiedManifest {
         signer_key_id: envelope.key_id,
         manifest,
+        signed_envelope: envelope_bytes.to_vec(),
     })
 }
 
@@ -184,6 +201,9 @@ fn validate_manifest(
     }
     if manifest.generation <= minimum_generation {
         return Err(ManifestError::GenerationRollback);
+    }
+    if manifest.generation > i64::MAX as u64 {
+        return Err(ManifestError::GenerationOutOfRange);
     }
     if manifest.issued_at >= manifest.expires_at
         || manifest.expires_at - manifest.issued_at > MAX_MANIFEST_TTL_SECONDS
@@ -330,8 +350,8 @@ mod tests {
     fn verifies_trusted_signature_and_valid_node() {
         let (bytes, trusted) = signed_envelope(&sample_manifest());
         let verified = verify_manifest(&bytes, &trusted, TEST_NOW, 0).unwrap();
-        assert_eq!(verified.signer_key_id, KEY_ID);
-        assert_eq!(verified.manifest.nodes[0].id, "eu-frankfurt-1");
+        assert_eq!(verified.signer_key_id(), KEY_ID);
+        assert_eq!(verified.manifest().nodes[0].id, "eu-frankfurt-1");
     }
 
     #[test]

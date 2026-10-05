@@ -5,6 +5,16 @@ use std::path::Path;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CachedRelayManifest {
+    pub generation: u64,
+    pub signer_key_id: String,
+    pub accepted_at: String,
+    /// The signed source envelope. Callers must re-verify this before reuse.
+    pub envelope_json: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
     pub id: i64,
     pub at: String,
@@ -57,7 +67,8 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, change TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS frame_sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, pid INTEGER NOT NULL, frame_count INTEGER NOT NULL, average_fps REAL NOT NULL, one_percent_low REAL NOT NULL, point_one_percent_low REAL NOT NULL, average_frame_time_ms REAL NOT NULL DEFAULT 0, p95_frame_time_ms REAL NOT NULL DEFAULT 0, frame_time_std_dev_ms REAL NOT NULL DEFAULT 0, frame_time_spikes INTEGER NOT NULL DEFAULT 0, dropped_frames INTEGER NOT NULL DEFAULT 0, average_cpu_busy_ms REAL, average_gpu_time_ms REAL, average_display_latency_ms REAL, capture_seconds INTEGER NOT NULL, csv_path TEXT NOT NULL, analysis_version INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS change_journal (pid INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, original_priority INTEGER NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL);")
+        CREATE TABLE IF NOT EXISTS change_journal (pid INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, original_priority INTEGER NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS relay_manifest_state (id INTEGER PRIMARY KEY CHECK(id = 1), generation INTEGER NOT NULL, signer_key_id TEXT NOT NULL, accepted_at TEXT NOT NULL, envelope_json TEXT NOT NULL);")
         .map_err(|err| err.to_string())?;
     let columns = {
         let mut statement = connection
@@ -89,6 +100,76 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         }
     }
     Ok(connection)
+}
+
+pub fn relay_manifest_generation(db: &Connection) -> Result<u64, String> {
+    let generation = db
+        .query_row(
+            "SELECT generation FROM relay_manifest_state WHERE id=1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?
+        .unwrap_or(0);
+    u64::try_from(generation).map_err(|_| "Stored relay manifest generation is invalid.".into())
+}
+
+pub fn cached_relay_manifest(db: &Connection) -> Result<Option<CachedRelayManifest>, String> {
+    let cached = db.query_row(
+        "SELECT generation, signer_key_id, accepted_at, envelope_json FROM relay_manifest_state WHERE id=1",
+        [],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)),
+    )
+    .optional()
+    .map_err(|err| err.to_string())?;
+    cached
+        .map(|(generation, signer_key_id, accepted_at, envelope_json)| {
+            Ok(CachedRelayManifest {
+                generation: u64::try_from(generation)
+                    .map_err(|_| "Stored relay manifest generation is invalid.")?,
+                signer_key_id,
+                accepted_at,
+                envelope_json,
+            })
+        })
+        .transpose()
+}
+
+pub fn cache_verified_relay_manifest(
+    db: &mut Connection,
+    verified: &crate::relay_manifest::VerifiedManifest,
+) -> Result<(), String> {
+    let generation = verified.manifest().generation;
+    let generation_i64 = i64::try_from(generation)
+        .map_err(|_| "Relay manifest generation exceeds SQLite integer range.")?;
+    let envelope_json = String::from_utf8(verified.signed_envelope().to_vec())
+        .map_err(|_| "Verified relay manifest envelope is not valid UTF-8.")?;
+    let accepted_at = Utc::now().to_rfc3339();
+    let transaction = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|err| err.to_string())?;
+    let current = transaction
+        .query_row(
+            "SELECT generation FROM relay_manifest_state WHERE id=1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?
+        .unwrap_or(0);
+    if current < 0 || generation_i64 <= current {
+        return Err("Relay manifest generation is stale or already accepted.".into());
+    }
+    transaction
+        .execute(
+            "INSERT INTO relay_manifest_state(id,generation,signer_key_id,accepted_at,envelope_json)
+             VALUES(1,?1,?2,?3,?4)
+             ON CONFLICT(id) DO UPDATE SET generation=excluded.generation, signer_key_id=excluded.signer_key_id, accepted_at=excluded.accepted_at, envelope_json=excluded.envelope_json",
+            rusqlite::params![generation_i64, verified.signer_key_id(), accepted_at, envelope_json],
+        )
+        .map_err(|err| err.to_string())?;
+    transaction.commit().map_err(|err| err.to_string())
 }
 
 pub fn custom_games(db: &Connection) -> Result<Vec<(String, String)>, String> {
@@ -251,4 +332,92 @@ pub fn clear_priority(db: &Connection, pid: u32) -> Result<(), String> {
     db.execute("DELETE FROM change_journal WHERE pid=?1", params![pid])
         .map_err(|err| err.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod relay_manifest_store_tests {
+    use super::*;
+    use crate::relay_manifest::{
+        verify_manifest, RelayManifest, RelayNode, SignedManifestEnvelope,
+    };
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use ed25519_dalek::{Signer, SigningKey};
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    const NOW: u64 = 1_800_000_000;
+    const KEY_ID: &str = "storage-test-key";
+    const DOMAIN: &[u8] = b"VYRE-RELAY-MANIFEST-V1\0";
+
+    fn verified_manifest(generation: u64) -> crate::relay_manifest::VerifiedManifest {
+        let signing_key = SigningKey::from_bytes(&[51u8; 32]);
+        let manifest = RelayManifest {
+            schema_version: 1,
+            generation,
+            issued_at: NOW - 10,
+            expires_at: NOW + 3600,
+            nodes: vec![RelayNode {
+                id: format!("test-node-{generation}"),
+                region: "eu-test".into(),
+                endpoint_host: "relay.example.net".into(),
+                endpoint_port: 51820,
+                public_key: STANDARD.encode([generation as u8; 32]),
+                protocol: "wireguard-udp".into(),
+            }],
+        };
+        let payload = serde_json::to_vec(&manifest).unwrap();
+        let mut signed_message = Vec::new();
+        signed_message.extend_from_slice(DOMAIN);
+        signed_message.extend_from_slice(KEY_ID.as_bytes());
+        signed_message.push(0);
+        signed_message.extend_from_slice(&payload);
+        let envelope = SignedManifestEnvelope {
+            key_id: KEY_ID.into(),
+            payload: STANDARD.encode(payload),
+            signature: STANDARD.encode(signing_key.sign(&signed_message).to_bytes()),
+        };
+        let trusted = BTreeMap::from([(KEY_ID.into(), signing_key.verifying_key().to_bytes())]);
+        verify_manifest(
+            &serde_json::to_vec(&envelope).unwrap(),
+            &trusted,
+            NOW,
+            generation.saturating_sub(1),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn persists_cached_envelope_and_rejects_generation_replay() {
+        let mut db = open(Path::new(":memory:")).unwrap();
+        assert_eq!(relay_manifest_generation(&db).unwrap(), 0);
+
+        let first = verified_manifest(1);
+        cache_verified_relay_manifest(&mut db, &first).unwrap();
+        assert_eq!(relay_manifest_generation(&db).unwrap(), 1);
+        let cached = cached_relay_manifest(&db).unwrap().unwrap();
+        assert_eq!(cached.generation, 1);
+        assert_eq!(cached.signer_key_id, KEY_ID);
+        assert!(!cached.envelope_json.is_empty());
+        assert!(cache_verified_relay_manifest(&mut db, &first).is_err());
+
+        let second = verified_manifest(2);
+        cache_verified_relay_manifest(&mut db, &second).unwrap();
+        assert_eq!(relay_manifest_generation(&db).unwrap(), 2);
+
+        let database = Mutex::new(db);
+        let trusted_key = SigningKey::from_bytes(&[51u8; 32])
+            .verifying_key()
+            .to_bytes();
+        let trusted = BTreeMap::from([(KEY_ID.into(), trusted_key)]);
+        let cached = crate::relay_client::load_cached(&database, &trusted, NOW)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.manifest().generation, 2);
+        assert_eq!(
+            crate::relay_client::load_cached(&database, &trusted, NOW + 3601),
+            Err(crate::relay_client::ManifestFetchError::Manifest(
+                crate::relay_manifest::ManifestError::ManifestExpired
+            ))
+        );
+    }
 }

@@ -36,6 +36,7 @@ src-tauri/src/
   system.rs                  Process, CPU, RAM, adapter byte counters, game detection
   priority.rs                Windows process priority API wrapper
   relay.rs                   Relay-independent route scoring primitives
+  relay_client.rs            Pinned-host HTTPS manifest fetch/cache boundary
   relay_manifest.rs          Pinned-key signed relay-manifest validation
   routing.rs                 Direct route trace through Windows tracert
   traffic.rs                 TCP connection ownership through Windows netstat
