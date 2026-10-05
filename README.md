@@ -55,7 +55,7 @@ The interface invokes only named Rust commands. It does not expose a general she
 - Safe and Competitive mode preference saved per game. The selection loads for the active game; BOOST GAME remains the explicit apply action.
 - Automatic detection for common game EXE names plus custom EXE paths. Minecraft Java is reported only when its command line identifies Minecraft.
 - Safe mode: baseline and follow-up probes with no system change.
-- Competitive mode: saves the original priority, then sets a detected game process to **Above Normal**. The setting is temporary. A SQLite journal supports restore on game close, normal exit, manual restore, or next launch after a crash.
+- Competitive mode: captures a 15-second frame baseline, saves the original priority, and temporarily tests **Above Normal**. A second PresentMon capture must show at least a 3% improvement in 1% low while average FPS stays within 2% of baseline; otherwise VYRE restores the original priority. Failed after-capture also triggers restore. A SQLite journal supports restore on game close, normal exit, manual restore, or next launch after a crash.
 - Before/after probe results and session history in local SQLite.
 - Lag Doctor: a 30-probe diagnosis of loss, jitter, CPU, and RAM, with evidence and limitations.
 - JSON diagnostic report export.

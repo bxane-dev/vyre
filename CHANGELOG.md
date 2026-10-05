@@ -4,6 +4,7 @@
 
 ### Added
 
+- Competitive BOOST now captures 15-second PresentMon samples before and after a temporary priority change. It keeps the change only when the 1% low improves by at least 3% and average FPS stays within 2%; it restores the original value when the threshold is missed or after-capture fails.
 - SQLite-backed Safe and Competitive mode preferences per game. Selecting a detected game loads its saved profile; applying the profile remains a manual action.
 - Persist up to 100 frame capture summaries in local SQLite and compare each game capture with its previous sample.
 - 15-second PresentMon capture for a selected running game, with average FPS, percentile-derived 1% and 0.1% lows, and saved raw CSV.

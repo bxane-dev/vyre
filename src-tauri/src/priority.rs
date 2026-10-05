@@ -46,6 +46,10 @@ pub fn set_above_normal(pid: u32) -> Result<(), String> {
     }
 }
 
+pub fn is_above_normal(priority: u32) -> bool {
+    priority == windows_sys::Win32::System::Threading::ABOVE_NORMAL_PRIORITY_CLASS
+}
+
 pub fn restore(pid: u32, original: u32) -> Result<(), String> {
     unsafe {
         let handle = OpenProcess(PROCESS_SET_INFORMATION, 0, pid);

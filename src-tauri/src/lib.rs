@@ -42,6 +42,8 @@ struct BenchmarkResult {
     after_score: Option<u8>,
     change: String,
     warning: Option<String>,
+    frame_before: Option<frames::FrameCapture>,
+    frame_after: Option<frames::FrameCapture>,
 }
 
 #[derive(Serialize)]
@@ -195,7 +197,11 @@ fn run_diagnostic(state: State<AppState>) -> Result<Diagnosis, String> {
 }
 
 #[tauri::command]
-fn boost_game(state: State<AppState>, pid: u32) -> Result<BenchmarkResult, String> {
+fn boost_game(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    pid: u32,
+) -> Result<BenchmarkResult, String> {
     let custom = custom_games(&state)?;
     let game: Game = state
         .monitor
@@ -208,31 +214,83 @@ fn boost_game(state: State<AppState>, pid: u32) -> Result<BenchmarkResult, Strin
         .unwrap_or(state.mode.lock().map_err(|err| err.to_string())?.clone());
     let before = measure(8, Duration::from_millis(700));
     let mut warning = None;
+    let mut frame_before = None;
+    let mut frame_after = None;
     let change = if mode == "Competitive" {
         let already_active = storage::journal(&*state.db.lock().map_err(|err| err.to_string())?)?
             .iter()
             .any(|entry| entry.pid == pid && entry.started_at == game.started_at);
         if already_active {
-            "Game process priority was already managed by this session.".to_string()
+            "Game process priority was already managed by this session; no second change was applied.".to_string()
         } else {
-            match priority::current(pid) {
-                Ok(original) => {
-                    storage::record_priority(
-                        &*state.db.lock().map_err(|err| err.to_string())?,
-                        pid,
-                        game.started_at,
-                        original,
-                        &game.name,
-                        &mode,
-                    )?;
-                    match priority::set_above_normal(pid) {
-                    Ok(()) => "Set game process priority to Above Normal for this session; original priority saved for restore.".to_string(),
-                    Err(error) => { let _ = storage::clear_priority(&*state.db.lock().map_err(|err| err.to_string())?, pid); warning = Some(error); "No system change applied.".to_string() }
-                }
-                }
+            match capture_game_frames(&app, &state, &game, 15) {
                 Err(error) => {
-                    warning = Some(error);
-                    "No system change applied.".to_string()
+                    warning = Some(format!("Competitive mode requires a frame baseline; priority was not changed. {error}"));
+                    "No system change applied because a frame baseline was unavailable.".to_string()
+                }
+                Ok(baseline) => {
+                    frame_before = Some(baseline.clone());
+                    match priority::current(pid) {
+                        Err(error) => {
+                            warning = Some(error);
+                            "No system change applied.".to_string()
+                        }
+                        Ok(original) if priority::is_above_normal(original) => {
+                            warning = Some("The game already has Above Normal priority, so VYRE left it unchanged.".into());
+                            "No change applied because the game already has Above Normal priority."
+                                .to_string()
+                        }
+                        Ok(original) => {
+                            storage::record_priority(
+                                &*state.db.lock().map_err(|err| err.to_string())?,
+                                pid,
+                                game.started_at,
+                                original,
+                                &game.name,
+                                &mode,
+                            )?;
+                            if let Err(error) = priority::set_above_normal(pid) {
+                                let _ = storage::clear_priority(
+                                    &*state.db.lock().map_err(|err| err.to_string())?,
+                                    pid,
+                                );
+                                warning = Some(error);
+                                "No system change applied.".to_string()
+                            } else {
+                                match capture_game_frames(&app, &state, &game, 15) {
+                                    Err(error) => {
+                                        if let Err(restore_error) =
+                                            restore_priority_entry(&state, &game, original)
+                                        {
+                                            warning = Some(format!("After-capture failed ({error}); automatic restore also failed ({restore_error}). Restore remains journaled."));
+                                            "Priority was changed temporarily; restore is still pending.".to_string()
+                                        } else {
+                                            warning = Some(format!("After-capture failed, so VYRE restored the original priority. {error}"));
+                                            "Original process priority restored because the result could not be measured.".to_string()
+                                        }
+                                    }
+                                    Ok(after) => {
+                                        let improves = after.one_percent_low
+                                            >= baseline.one_percent_low * 1.03
+                                            && after.average_fps >= baseline.average_fps * 0.98;
+                                        if improves {
+                                            frame_after = Some(after);
+                                            "Kept Above Normal priority: 1% low improved by at least 3% with average FPS within 2% of baseline.".to_string()
+                                        } else if let Err(error) =
+                                            restore_priority_entry(&state, &game, original)
+                                        {
+                                            frame_after = Some(after);
+                                            warning = Some(format!("Frame data did not meet the keep threshold, but automatic restore failed ({error}). Restore remains journaled."));
+                                            "Priority was changed temporarily; restore is still pending.".to_string()
+                                        } else {
+                                            frame_after = Some(after);
+                                            "Restored original priority because frame data did not meet the improvement threshold.".to_string()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -259,6 +317,8 @@ fn boost_game(state: State<AppState>, pid: u32) -> Result<BenchmarkResult, Strin
         after_score,
         change,
         warning,
+        frame_before,
+        frame_after,
     })
 }
 
@@ -314,20 +374,19 @@ fn trace_route() -> Result<String, String> {
     routing::trace_direct_route()
 }
 
-#[tauri::command]
-fn capture_frames(
-    app: tauri::AppHandle,
-    state: State<AppState>,
-    pid: u32,
+fn restore_priority_entry(state: &AppState, game: &Game, original: u32) -> Result<(), String> {
+    if state.monitor.process_matches(game.pid, game.started_at) {
+        priority::restore(game.pid, original)?;
+    }
+    storage::clear_priority(&*state.db.lock().map_err(|err| err.to_string())?, game.pid)
+}
+
+fn capture_game_frames(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    game: &Game,
+    seconds: u32,
 ) -> Result<frames::FrameCapture, String> {
-    const SECONDS: u32 = 15;
-    let game = state
-        .monitor
-        .snapshot(&custom_games(&state)?)
-        .games
-        .into_iter()
-        .find(|game| game.pid == pid)
-        .ok_or("Select a running detected game before capturing frame data.")?;
     if !state.monitor.process_matches(game.pid, game.started_at) {
         return Err("The selected game exited before capture started.".into());
     }
@@ -358,16 +417,18 @@ fn capture_frames(
     let csv_path = directory.join(format!(
         "vyre-frames-{}-{}.csv",
         game.pid,
-        Utc::now().format("%Y%m%d-%H%M%S")
+        Utc::now().format("%Y%m%d-%H%M%S-%3f")
     ));
+    let pid_arg = game.pid.to_string();
+    let seconds_arg = seconds.to_string();
     let mut command = std::process::Command::new(executable);
     command
-        .args(["--process_id", &game.pid.to_string(), "--output_file"])
+        .args(["--process_id", &pid_arg, "--output_file"])
         .arg(&csv_path)
         .args([
             "--exclude_dropped",
             "--timed",
-            &SECONDS.to_string(),
+            &seconds_arg,
             "--terminate_after_timed",
             "--no_console_stats",
         ])
@@ -381,7 +442,7 @@ fn capture_frames(
     let mut child = command
         .spawn()
         .map_err(|err| format!("Could not start PresentMon: {err}"))?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(SECONDS as u64 + 10);
+    let deadline = std::time::Instant::now() + Duration::from_secs(seconds as u64 + 10);
     loop {
         if let Some(status) = child
             .try_wait()
@@ -395,7 +456,9 @@ fn capture_frames(
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("PresentMon did not finish the 15-second capture in time.".into());
+            return Err(format!(
+                "PresentMon did not finish the {seconds}-second capture in time."
+            ));
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -403,9 +466,20 @@ fn capture_frames(
         let _ = std::fs::remove_file(&csv_path);
         return Err("The game exited during capture. No frame result was saved.".into());
     }
-    let capture = frames::parse_capture(&csv_path, game.name, game.pid, SECONDS)?;
+    let capture = frames::parse_capture(&csv_path, game.name.clone(), game.pid, seconds)?;
     storage::save_frame_session(&*state.db.lock().map_err(|err| err.to_string())?, &capture)?;
     Ok(capture)
+}
+
+#[tauri::command]
+fn capture_frames(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    pid: u32,
+) -> Result<frames::FrameCapture, String> {
+    let game = detected_game(&state, pid)
+        .map_err(|_| "Select a running detected game before capturing frame data.")?;
+    capture_game_frames(&app, &state, &game, 15)
 }
 
 #[tauri::command]

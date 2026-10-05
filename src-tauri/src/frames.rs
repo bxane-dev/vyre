@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::{collections::HashMap, fs::File, io::BufReader, path::Path};
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameCapture {
     pub game: String,

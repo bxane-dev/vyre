@@ -13,7 +13,7 @@ type Adapter = { name: string; downloadMbps: number; uploadMbps: number };
 export type Connection = { pid: number; process: string; local: string; remote: string; state: string };
 export type Machine = { cpuPercent: number; ramPercent: number; ramUsedGb: number; ramTotalGb: number; downloadMbps: number; uploadMbps: number; games: Game[]; topProcesses: Process[]; adapters: Adapter[] };
 type Snapshot = { at: string; machine: Machine; probe: Probe; networkScore: number | null; mode: string; activeChanges: number };
-export type Benchmark = { game: string; mode: string; before: Probe; after: Probe; beforeScore: number | null; afterScore: number | null; change: string; warning: string | null };
+export type Benchmark = { game: string; mode: string; before: Probe; after: Probe; beforeScore: number | null; afterScore: number | null; change: string; warning: string | null; frameBefore: FrameCapture | null; frameAfter: FrameCapture | null };
 type Diagnosis = { probe: Probe; score: number | null; primaryProblem: string; evidence: string; recommendation: string; cpuPercent: number; ramPercent: number };
 type Session = { id: number; at: string; game: string; mode: string; beforeJson: string; afterJson: string; change: string };
 type FrameCapture = { game: string; pid: number; frameCount: number; averageFps: number; onePercentLow: number; pointOnePercentLow: number; captureSeconds: number; csvPath: string };
@@ -86,7 +86,7 @@ function App() {
 
   async function runBoost() {
     if (!selectedPid) return;
-    setBusy('Benchmarking and applying profile…'); setError(null); setNotice(null);
+    setBusy(profileMode === 'Competitive' ? 'Measuring baseline and checking the profile (up to 45 seconds)…' : 'Benchmarking in Safe mode…'); setError(null); setNotice(null);
     try { setResult(await invoke<Benchmark>('boost_game', { pid: selectedPid })); await refresh(); await loadHistory(); }
     catch (cause) { setError(String(cause)); }
     finally { setBusy(null); }
