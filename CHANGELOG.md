@@ -8,6 +8,7 @@
 - Added an isolated route measurement/scoring model that combines median RTT, p95 deviation, and packet loss and rejects comparisons with different targets or probe methods. It is not connected to live relay measurements or the UI.
 - Added signed relay-manifest verification using pinned Ed25519 keys, a domain-separated signature, strict schema/node validation, expiry and clock-skew checks, generation rollback protection hooks, and payload size limits. No trust keys, manifest service, or node list is distributed in this release.
 - Added an HTTPS-only manifest fetch path with exact-host configuration, redirects disabled, bounded response streaming, and SQLite generation/cache persistence. Cached envelopes are re-verified before reuse. VYRE ships no endpoint or production trust keys, so the path is intentionally not invoked or shown in the UI.
+- Added an in-memory WireGuard profile builder that accepts only a verified relay node and short-lived session lease, supports IPv4/IPv6, rejects broad/default routes, and zeroizes private key/profile buffers on drop. It does not install a Windows service or change routes; no relay endpoint or session issuer is available yet.
 
 ### Added
 

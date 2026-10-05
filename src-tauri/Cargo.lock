@@ -4426,6 +4426,7 @@ dependencies = [
  "chrono",
  "csv",
  "ed25519-dalek",
+ "ipnet",
  "regex",
  "reqwest",
  "rusqlite",
@@ -4435,6 +4436,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "windows-sys 0.59.0",
+ "zeroize",
 ]
 
 [[package]]
