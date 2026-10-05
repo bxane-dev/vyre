@@ -1,8 +1,8 @@
-# vyre 0.1.0
+# vyre 0.1.1
 
 ![vyre logo](src/assets/vyre-logo.png)
 
-vyre is a Windows 10/11 desktop application for measured gaming connection and system diagnostics. It uses Tauri 2, React, TypeScript, Rust, and a local SQLite database. Version 0.1.0 has working diagnostics and a reversible process-priority action; advanced features are listed below.
+vyre is a Windows 10/11 desktop application for measured gaming connection and system diagnostics. It uses Tauri 2, React, TypeScript, Rust, and a local SQLite database. Version 0.1.1 has working diagnostics and a reversible process-priority action; advanced features are listed below.
 
 See the [changelog](CHANGELOG.md) for release changes and current limits.
 

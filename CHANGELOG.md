@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — 2026-10-05
 
 ### Architecture
 
 - Added the Phase 7 relay architecture and local implementation foundation: authenticated WireGuard protocol tests, signed node manifests and session grants, measured route scoring, scoped tunnel configuration, recovery boundaries, privacy limits, and implementation acceptance gates. There is no production relay service, Windows route adapter, or deployed node.
 - Added an isolated route measurement/scoring model that combines median RTT, p95 deviation, and packet loss; rejects comparisons with different targets or probe methods; and recommends a candidate only after three healthy agreeing windows. Failback requires sustained regression or unhealthy loss. The policy only returns a recommendation and is not connected to live measurements, route changes, or the UI.
+- Added a best-route chooser that ranks only candidates which pass the stability and packet-loss gates, using their mean score to the same target. Geographic proximity is not used as a substitute for measured game-server latency. No route is changed by this code.
 - Added bounded local persistence for raw-paired route comparison results. Storage re-scores the inputs and keeps the newest 1,000 records; it is not connected to a live probe producer or UI.
 - Added signed relay-manifest verification using pinned Ed25519 keys, a domain-separated signature, strict schema/node validation, expiry and clock-skew checks, generation rollback protection hooks, and payload size limits. No trust keys, manifest service, or node list is distributed in this release.
 - Added an HTTPS-only manifest fetch path with exact-host configuration, redirects disabled, bounded response streaming, and SQLite generation/cache persistence. Cached envelopes are re-verified before reuse. VYRE ships no endpoint or production trust keys, so the path is intentionally not invoked or shown in the UI.

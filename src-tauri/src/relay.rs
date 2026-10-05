@@ -72,6 +72,15 @@ pub enum RouteRecommendation {
     Candidate(RouteMetrics),
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct BestRouteCandidate {
+    pub route_id: String,
+    pub target: String,
+    pub mean_score_ms: f64,
+    pub mean_improvement_ms: f64,
+    pub agreeing_windows: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScoreError {
     EmptyRouteId,
@@ -220,6 +229,49 @@ pub fn recommend_candidate(
         return RouteRecommendation::KeepDirect;
     }
     RouteRecommendation::Candidate(first.candidate.clone())
+}
+
+/// Pick the lowest-scoring healthy route only after each candidate has passed
+/// the same-target, repeated-window policy against the direct path. This uses
+/// measured game-server latency, not geographic distance, and never changes a
+/// route itself.
+pub fn recommend_best_candidate(
+    candidate_windows: &[Vec<RouteComparison>],
+    policy: RouteSelectionPolicy,
+) -> Option<BestRouteCandidate> {
+    let mut eligible = candidate_windows
+        .iter()
+        .filter_map(|windows| {
+            let RouteRecommendation::Candidate(candidate) = recommend_candidate(windows, policy)
+            else {
+                return None;
+            };
+            let recent = &windows[windows.len() - policy.agreeing_windows..];
+            let mean_score_ms = recent
+                .iter()
+                .map(|window| window.candidate.score_ms)
+                .sum::<f64>()
+                / recent.len() as f64;
+            let mean_improvement_ms = recent
+                .iter()
+                .map(|window| window.improvement_ms)
+                .sum::<f64>()
+                / recent.len() as f64;
+            Some(BestRouteCandidate {
+                route_id: candidate.route_id,
+                target: candidate.target,
+                mean_score_ms,
+                mean_improvement_ms,
+                agreeing_windows: recent.len(),
+            })
+        })
+        .collect::<Vec<_>>();
+    eligible.sort_by(|left, right| {
+        left.mean_score_ms
+            .total_cmp(&right.mean_score_ms)
+            .then_with(|| left.route_id.cmp(&right.route_id))
+    });
+    eligible.into_iter().next()
 }
 
 /// Require sustained candidate regression or unhealthy loss before suggesting
@@ -447,5 +499,39 @@ mod tests {
         ];
         assert!(should_fail_back(&regressions, 5.0, 1.0, 3));
         assert!(!should_fail_back(&regressions[..2], 5.0, 1.0, 3));
+    }
+
+    #[test]
+    fn best_route_is_the_lowest_measured_healthy_score_for_the_game_target() {
+        let windows = |candidate_id: &str, values: &[(f64, f64)]| {
+            values
+                .iter()
+                .map(|(direct, candidate)| {
+                    compare(
+                        measurement(
+                            "direct",
+                            "198.51.100.25",
+                            &[Some(*direct), Some(*direct + 1.0)],
+                        ),
+                        measurement(
+                            candidate_id,
+                            "198.51.100.25",
+                            &[Some(*candidate), Some(*candidate + 1.0)],
+                        ),
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        let slower = windows("relay-nearby", &[(80.0, 55.0), (82.0, 56.0), (81.0, 54.0)]);
+        let faster = windows(
+            "relay-lowest-rtt",
+            &[(80.0, 35.0), (82.0, 36.0), (81.0, 34.0)],
+        );
+        let best =
+            recommend_best_candidate(&[slower, faster], RouteSelectionPolicy::default()).unwrap();
+        assert_eq!(best.route_id, "relay-lowest-rtt");
+        assert_eq!(best.target, "198.51.100.25");
+        assert_eq!(best.agreeing_windows, 3);
     }
 }
