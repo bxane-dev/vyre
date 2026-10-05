@@ -58,6 +58,7 @@ The interface invokes only named Rust commands. It does not expose a general she
 - Before/after probe results and session history in local SQLite.
 - Lag Doctor: a 30-probe diagnosis of loss, jitter, CPU, and RAM, with evidence and limitations.
 - JSON diagnostic report export.
+- Local SQLite history for up to 100 recent frame captures, with average FPS and low-percentile comparisons to each game's prior capture.
 - The window opens centered. The icon is a V.
 
 The network score is a simple local indicator based on probe ping, jitter, and loss. It is not an FPS score or a validated prediction of game performance. Process priority cannot shorten the internet route; before/after probe changes may be ordinary variation.

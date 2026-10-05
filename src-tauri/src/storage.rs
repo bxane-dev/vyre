@@ -15,6 +15,21 @@ pub struct SessionRecord {
     pub change: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameSessionRecord {
+    pub id: i64,
+    pub at: String,
+    pub game: String,
+    pub pid: u32,
+    pub frame_count: usize,
+    pub average_fps: f64,
+    pub one_percent_low: f64,
+    pub point_one_percent_low: f64,
+    pub capture_seconds: u32,
+    pub csv_path: String,
+}
+
 #[derive(Clone)]
 pub struct JournalEntry {
     pub pid: u32,
@@ -30,6 +45,7 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     connection.execute_batch("PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS custom_games (id INTEGER PRIMARY KEY, name TEXT NOT NULL, exe TEXT NOT NULL UNIQUE);
         CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, change TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS frame_sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, pid INTEGER NOT NULL, frame_count INTEGER NOT NULL, average_fps REAL NOT NULL, one_percent_low REAL NOT NULL, point_one_percent_low REAL NOT NULL, capture_seconds INTEGER NOT NULL, csv_path TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS change_journal (pid INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, original_priority INTEGER NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL);")
         .map_err(|err| err.to_string())?;
     Ok(connection)
@@ -80,6 +96,40 @@ pub fn save_session(
 ) -> Result<(), String> {
     db.execute("INSERT INTO sessions(at,game,mode,before_json,after_json,change) VALUES(?1,?2,?3,?4,?5,?6)",
         params![Utc::now().to_rfc3339(), game, mode, before_json, after_json, change]).map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+pub fn frame_history(db: &Connection) -> Result<Vec<FrameSessionRecord>, String> {
+    let mut statement = db.prepare("SELECT id, at, game, pid, frame_count, average_fps, one_percent_low, point_one_percent_low, capture_seconds, csv_path FROM frame_sessions ORDER BY id DESC LIMIT 100").map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(FrameSessionRecord {
+                id: row.get(0)?,
+                at: row.get(1)?,
+                game: row.get(2)?,
+                pid: row.get(3)?,
+                frame_count: row.get(4)?,
+                average_fps: row.get(5)?,
+                one_percent_low: row.get(6)?,
+                point_one_percent_low: row.get(7)?,
+                capture_seconds: row.get(8)?,
+                csv_path: row.get(9)?,
+            })
+        })
+        .map_err(|err| err.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())
+}
+
+pub fn save_frame_session(
+    db: &Connection,
+    capture: &crate::frames::FrameCapture,
+) -> Result<(), String> {
+    db.execute("INSERT INTO frame_sessions(at,game,pid,frame_count,average_fps,one_percent_low,point_one_percent_low,capture_seconds,csv_path) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![
+        Utc::now().to_rfc3339(), capture.game, capture.pid, capture.frame_count,
+        capture.average_fps, capture.one_percent_low, capture.point_one_percent_low,
+        capture.capture_seconds, capture.csv_path
+    ]).map_err(|err| err.to_string())?;
     Ok(())
 }
 

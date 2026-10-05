@@ -368,7 +368,14 @@ fn capture_frames(
         let _ = std::fs::remove_file(&csv_path);
         return Err("The game exited during capture. No frame result was saved.".into());
     }
-    frames::parse_capture(&csv_path, game.name, game.pid, SECONDS)
+    let capture = frames::parse_capture(&csv_path, game.name, game.pid, SECONDS)?;
+    storage::save_frame_session(&*state.db.lock().map_err(|err| err.to_string())?, &capture)?;
+    Ok(capture)
+}
+
+#[tauri::command]
+fn frame_history(state: State<AppState>) -> Result<Vec<storage::FrameSessionRecord>, String> {
+    storage::frame_history(&*state.db.lock().map_err(|err| err.to_string())?)
 }
 
 pub fn run() {
@@ -401,7 +408,8 @@ pub fn run() {
             export_report,
             traffic_connections,
             trace_route,
-            capture_frames
+            capture_frames,
+            frame_history
         ])
         .build(tauri::generate_context!())
         .expect("failed to build vyre");
