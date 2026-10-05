@@ -15,6 +15,17 @@ pub struct CachedRelayManifest {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Used when live route measurements are connected.
+pub struct RelayMeasurementRecord {
+    pub id: i64,
+    pub at: String,
+    pub direct_json: String,
+    pub candidate_json: String,
+    pub comparison_json: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
     pub id: i64,
     pub at: String,
@@ -108,7 +119,8 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         CREATE TABLE IF NOT EXISTS change_journal (pid INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, original_priority INTEGER NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS relay_manifest_state (id INTEGER PRIMARY KEY CHECK(id = 1), generation INTEGER NOT NULL, signer_key_id TEXT NOT NULL, accepted_at TEXT NOT NULL, envelope_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS relay_session_journal (session_id TEXT PRIMARY KEY, phase TEXT NOT NULL CHECK(phase IN ('prepared','tunnel_ready','routes_active','restoring')), protected_restore_blob BLOB NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_error TEXT);
-        CREATE TABLE IF NOT EXISTS relay_grant_replay (session_id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, accepted_at TEXT NOT NULL); ")
+        CREATE TABLE IF NOT EXISTS relay_grant_replay (session_id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, accepted_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS relay_measurements (id INTEGER PRIMARY KEY, at TEXT NOT NULL, direct_json TEXT NOT NULL, candidate_json TEXT NOT NULL, comparison_json TEXT NOT NULL); ")
         .map_err(|err| err.to_string())?;
     let columns = {
         let mut statement = connection
@@ -331,6 +343,56 @@ pub fn cache_verified_relay_manifest(
         )
         .map_err(|err| err.to_string())?;
     transaction.commit().map_err(|err| err.to_string())
+}
+
+/// Compare and retain a bounded, reproducible record of direct and candidate
+/// measurements. The input is re-scored here so callers cannot persist forged
+/// summary metrics. Route history is local and capped at 1,000 windows.
+#[allow(dead_code)] // No production probe producer exists yet.
+pub fn save_relay_measurement(
+    db: &Connection,
+    direct: crate::relay::RouteMeasurement,
+    candidate: crate::relay::RouteMeasurement,
+) -> Result<crate::relay::RouteComparison, String> {
+    let direct_json = serde_json::to_string(&direct).map_err(|err| err.to_string())?;
+    let candidate_json = serde_json::to_string(&candidate).map_err(|err| err.to_string())?;
+    let comparison = crate::relay::compare(direct, candidate).map_err(|err| err.to_string())?;
+    let comparison_json = serde_json::to_string(&comparison).map_err(|err| err.to_string())?;
+    let transaction = db.unchecked_transaction().map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            "INSERT INTO relay_measurements(at,direct_json,candidate_json,comparison_json) VALUES(?1,?2,?3,?4)",
+            params![Utc::now().to_rfc3339(), direct_json, candidate_json, comparison_json],
+        )
+        .map_err(|err| err.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM relay_measurements WHERE id NOT IN (SELECT id FROM relay_measurements ORDER BY id DESC LIMIT 1000)",
+            [],
+        )
+        .map_err(|err| err.to_string())?;
+    transaction.commit().map_err(|err| err.to_string())?;
+    Ok(comparison)
+}
+
+#[allow(dead_code)] // No production route history UI exists yet.
+pub fn relay_measurement_history(db: &Connection) -> Result<Vec<RelayMeasurementRecord>, String> {
+    let mut statement = db
+        .prepare("SELECT id,at,direct_json,candidate_json,comparison_json FROM relay_measurements ORDER BY id DESC LIMIT 1000")
+        .map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(RelayMeasurementRecord {
+                id: row.get(0)?,
+                at: row.get(1)?,
+                direct_json: row.get(2)?,
+                candidate_json: row.get(3)?,
+                comparison_json: row.get(4)?,
+            })
+        })
+        .map_err(|err| err.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())
 }
 
 pub fn custom_games(db: &Connection) -> Result<Vec<(String, String)>, String> {
@@ -651,5 +713,58 @@ mod relay_manifest_store_tests {
         let db = open(Path::new(":memory:")).unwrap();
         assert!(begin_relay_session(&db, "bad", b"ciphertext").is_err());
         assert!(begin_relay_session(&db, "session-0123456789abcdef", b"").is_err());
+    }
+
+    #[test]
+    fn relay_measurements_are_rescored_persisted_and_readable() {
+        let db = open(Path::new(":memory:")).unwrap();
+        let direct = crate::relay::RouteMeasurement {
+            route_id: "direct".into(),
+            target: "203.0.113.10:27015".into(),
+            method: crate::relay::ProbeMethod::UdpEcho,
+            sent: 3,
+            samples_ms: vec![Some(50.0), Some(52.0), None],
+        };
+        let candidate = crate::relay::RouteMeasurement {
+            route_id: "candidate".into(),
+            target: "203.0.113.10:27015".into(),
+            method: crate::relay::ProbeMethod::UdpEcho,
+            sent: 3,
+            samples_ms: vec![Some(40.0), Some(42.0), None],
+        };
+        let result = save_relay_measurement(&db, direct, candidate).unwrap();
+        assert!(result.improvement_ms > 0.0);
+
+        let history = relay_measurement_history(&db).unwrap();
+        assert_eq!(history.len(), 1);
+        let decoded: crate::relay::RouteComparison =
+            serde_json::from_str(&history[0].comparison_json).unwrap();
+        let stored_direct: crate::relay::RouteMeasurement =
+            serde_json::from_str(&history[0].direct_json).unwrap();
+        let stored_candidate: crate::relay::RouteMeasurement =
+            serde_json::from_str(&history[0].candidate_json).unwrap();
+        assert_eq!(decoded, result);
+        assert_eq!(stored_direct.sent, 3);
+        assert_eq!(stored_candidate.samples_ms[2], None);
+        assert!((decoded.direct.loss_percent - 100.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn relay_measurements_reject_incomparable_inputs_without_persisting() {
+        let db = open(Path::new(":memory:")).unwrap();
+        let measurement = |route_id: &str, target: &str| crate::relay::RouteMeasurement {
+            route_id: route_id.into(),
+            target: target.into(),
+            method: crate::relay::ProbeMethod::Icmp,
+            sent: 1,
+            samples_ms: vec![Some(10.0)],
+        };
+        assert!(save_relay_measurement(
+            &db,
+            measurement("direct", "203.0.113.1"),
+            measurement("candidate", "203.0.113.2")
+        )
+        .is_err());
+        assert!(relay_measurement_history(&db).unwrap().is_empty());
     }
 }

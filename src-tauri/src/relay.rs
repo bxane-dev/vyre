@@ -48,6 +48,30 @@ pub struct RouteComparison {
     pub improvement_ms: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RouteSelectionPolicy {
+    pub minimum_improvement_ms: f64,
+    pub maximum_candidate_loss_percent: f64,
+    pub agreeing_windows: usize,
+}
+
+impl Default for RouteSelectionPolicy {
+    fn default() -> Self {
+        Self {
+            minimum_improvement_ms: 5.0,
+            maximum_candidate_loss_percent: 1.0,
+            agreeing_windows: 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RouteRecommendation {
+    NeedMoreComparableMeasurements,
+    KeepDirect,
+    Candidate(RouteMetrics),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScoreError {
     EmptyRouteId,
@@ -144,6 +168,113 @@ pub fn compare(
         candidate,
         improvement_ms,
     })
+}
+
+/// Recommend a candidate only when the latest configured number of comparable
+/// windows all agree, it clears the improvement margin, and loss stays under
+/// the health limit. This returns evidence, never changes a route.
+pub fn recommend_candidate(
+    recent_windows: &[RouteComparison],
+    policy: RouteSelectionPolicy,
+) -> RouteRecommendation {
+    if policy.agreeing_windows == 0
+        || !policy.minimum_improvement_ms.is_finite()
+        || policy.minimum_improvement_ms < 0.0
+        || !policy.maximum_candidate_loss_percent.is_finite()
+        || !(0.0..=100.0).contains(&policy.maximum_candidate_loss_percent)
+    {
+        return RouteRecommendation::KeepDirect;
+    }
+    if recent_windows.len() < policy.agreeing_windows {
+        return RouteRecommendation::NeedMoreComparableMeasurements;
+    }
+    let windows = &recent_windows[recent_windows.len() - policy.agreeing_windows..];
+    let first = &windows[0];
+    let candidate_id = &first.candidate.route_id;
+    let target = &first.direct.target;
+    let method = &first.direct.method;
+    let consistent = windows.iter().all(|window| {
+        window.direct.route_id == first.direct.route_id
+            && window.candidate.route_id == *candidate_id
+            && window.direct.target.eq_ignore_ascii_case(target)
+            && window.candidate.target.eq_ignore_ascii_case(target)
+            && window.direct.method == *method
+            && window.candidate.method == *method
+            && window.improvement_ms.is_finite()
+            && window.direct.sent > 0
+            && window.candidate.sent > 0
+            && window.direct.received <= window.direct.sent
+            && window.candidate.received <= window.candidate.sent
+            && valid_metrics(&window.direct)
+            && valid_metrics(&window.candidate)
+            && (window.improvement_ms - (window.direct.score_ms - window.candidate.score_ms)).abs()
+                <= 0.01
+    });
+    if !consistent {
+        return RouteRecommendation::KeepDirect;
+    }
+    if windows.iter().any(|window| {
+        window.improvement_ms < policy.minimum_improvement_ms
+            || window.candidate.loss_percent > policy.maximum_candidate_loss_percent
+    }) {
+        return RouteRecommendation::KeepDirect;
+    }
+    RouteRecommendation::Candidate(first.candidate.clone())
+}
+
+/// Require sustained candidate regression or unhealthy loss before suggesting
+/// failback. A single bad measurement never triggers an automatic transition.
+pub fn should_fail_back(
+    recent_windows: &[RouteComparison],
+    regression_margin_ms: f64,
+    maximum_loss_percent: f64,
+    agreeing_windows: usize,
+) -> bool {
+    if agreeing_windows == 0
+        || recent_windows.len() < agreeing_windows
+        || !regression_margin_ms.is_finite()
+        || regression_margin_ms < 0.0
+        || !maximum_loss_percent.is_finite()
+        || !(0.0..=100.0).contains(&maximum_loss_percent)
+    {
+        return false;
+    }
+    let windows = &recent_windows[recent_windows.len() - agreeing_windows..];
+    let first = &windows[0];
+    windows.iter().all(|window| {
+        window.direct.route_id == first.direct.route_id
+            && window
+                .direct
+                .target
+                .eq_ignore_ascii_case(&first.direct.target)
+            && window
+                .candidate
+                .target
+                .eq_ignore_ascii_case(&first.direct.target)
+            && window.direct.method == first.direct.method
+            && window.candidate.method == first.direct.method
+            && window.candidate.route_id == first.candidate.route_id
+            && window.improvement_ms.is_finite()
+            && valid_metrics(&window.direct)
+            && valid_metrics(&window.candidate)
+            && (window.improvement_ms - (window.direct.score_ms - window.candidate.score_ms)).abs()
+                <= 0.01
+            && (window.improvement_ms <= -regression_margin_ms
+                || window.candidate.loss_percent > maximum_loss_percent)
+    })
+}
+
+fn valid_metrics(metrics: &RouteMetrics) -> bool {
+    metrics.sent > 0
+        && metrics.received <= metrics.sent
+        && metrics.loss_percent.is_finite()
+        && (0.0..=100.0).contains(&metrics.loss_percent)
+        && metrics.median_rtt_ms.is_finite()
+        && metrics.median_rtt_ms >= 0.0
+        && metrics.p95_deviation_ms.is_finite()
+        && metrics.p95_deviation_ms >= 0.0
+        && metrics.score_ms.is_finite()
+        && metrics.score_ms >= 0.0
 }
 
 fn percentile(sorted: &[f64], quantile: f64) -> f64 {
@@ -255,5 +386,66 @@ mod tests {
             )),
             Err(ScoreError::InvalidSample)
         );
+    }
+
+    fn window(direct: &[Option<f64>], candidate: &[Option<f64>]) -> RouteComparison {
+        compare(
+            measurement("direct", "game.example", direct),
+            measurement("relay-eu", "game.example", candidate),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn auto_recommendation_requires_three_agreeing_healthy_windows() {
+        let policy = RouteSelectionPolicy::default();
+        let windows = vec![
+            window(&[Some(50.0), Some(52.0)], &[Some(35.0), Some(37.0)]),
+            window(&[Some(48.0), Some(50.0)], &[Some(34.0), Some(35.0)]),
+            window(&[Some(49.0), Some(51.0)], &[Some(36.0), Some(37.0)]),
+        ];
+        assert_eq!(
+            recommend_candidate(&windows[..2], policy),
+            RouteRecommendation::NeedMoreComparableMeasurements
+        );
+        assert!(matches!(
+            recommend_candidate(&windows, policy),
+            RouteRecommendation::Candidate(metrics) if metrics.route_id == "relay-eu"
+        ));
+    }
+
+    #[test]
+    fn auto_recommendation_keeps_direct_when_any_window_disagrees_or_loses_packets() {
+        let policy = RouteSelectionPolicy::default();
+        let windows = vec![
+            window(&[Some(50.0), Some(52.0)], &[Some(35.0), Some(37.0)]),
+            window(&[Some(48.0), Some(50.0)], &[Some(34.0), Some(35.0)]),
+            window(&[Some(49.0), Some(51.0)], &[Some(50.0), Some(52.0)]),
+        ];
+        assert_eq!(
+            recommend_candidate(&windows, policy),
+            RouteRecommendation::KeepDirect
+        );
+
+        let lossy = vec![
+            window(&[Some(50.0), Some(52.0)], &[Some(35.0), Some(37.0), None]),
+            window(&[Some(48.0), Some(50.0)], &[Some(34.0), Some(35.0), None]),
+            window(&[Some(49.0), Some(51.0)], &[Some(36.0), Some(37.0), None]),
+        ];
+        assert_eq!(
+            recommend_candidate(&lossy, policy),
+            RouteRecommendation::KeepDirect
+        );
+    }
+
+    #[test]
+    fn failback_requires_sustained_regression_or_unhealthy_loss() {
+        let regressions = vec![
+            window(&[Some(30.0), Some(31.0)], &[Some(40.0), Some(41.0)]),
+            window(&[Some(30.0), Some(31.0)], &[Some(42.0), Some(43.0)]),
+            window(&[Some(30.0), Some(31.0)], &[Some(44.0), Some(45.0)]),
+        ];
+        assert!(should_fail_back(&regressions, 5.0, 1.0, 3));
+        assert!(!should_fail_back(&regressions[..2], 5.0, 1.0, 3));
     }
 }

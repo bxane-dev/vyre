@@ -1,6 +1,6 @@
 # VYRE relay architecture
 
-**Status:** Phase 7 design baseline. No relay protocol implementation, control service, or deployed relay is active in VYRE 0.1.0.
+**Status:** Phase 7 has an implemented, tested local security and protocol foundation, but no production control service, Windows route adapter, or deployed relay is active. Relay UI remains unavailable.
 
 ## Goals and non-goals
 
@@ -48,9 +48,9 @@ The caller must supply a release-pinned Ed25519 key map and persist the accepted
 
 1. Identify the game process using the existing process catalogue. Resolve a game destination only from supported Windows connection metadata or an explicit user-selected server endpoint. Do not guess a game server from a generic public probe.
 2. For each candidate, measure the direct path and relayed path to the **same destination with the same probe method**. A relay's own ping is a node-health signal only; it is not evidence of game-server latency. If the destination does not support the probe, label the result unavailable rather than substituting a different host.
-3. Collect repeated windows of RTT samples and record median RTT, p95 absolute deviation from the median, loss, sample count, route identity, target, and timestamp. Discard incomplete or incomparable windows.
+3. Collect repeated windows of RTT samples and record median RTT, p95 absolute deviation from the median, loss, sample count, route identity, target, and timestamp. Discard incomplete or incomparable windows. The local persistence helper re-scores raw paired measurements before storing a bounded history of 1,000 comparisons.
 4. Rank a route with a transparent score in milliseconds: `median RTT + 2 × p95 absolute deviation + 1000 × loss fraction`. This is a tunable starting heuristic, not a prediction of player experience. Show the component measurements beside the score.
-5. Keep the direct route as the initial and recovery route. Auto-select only after at least three comparable windows agree that the relay score is better by a configured margin and the relay passes loss and health limits. Require a sustained regression before switching away to avoid route flapping. Keep a manual Direct option.
+5. Keep the direct route as the initial and recovery route. The route policy recommends a candidate only after at least three comparable windows agree that the relay score is better by a configured margin and loss stays within its limit. Its failback policy requires sustained regression or unhealthy loss. These functions return recommendations only; no route is changed. Keep a manual Direct option when a production route controller exists.
 6. Store the route selected, comparison measurements, and every transition in local session history. Never claim a ping reduction unless the same-target measurements support it; show the exact measurement window and sample size.
 
 The first implementation should support an explicit target and manual route comparison. Automatic game-server discovery and automatic route selection remain gated on validated per-game endpoint coverage and real-world stability data. Existing VYRE readings to `1.1.1.1` must not be repurposed as game-server benchmarks.
@@ -72,11 +72,11 @@ If a reviewed app-specific implementation is not available, VYRE must label the 
 
 ## Phase 7 acceptance gates
 
-This document completes the architecture decision portion of Phase 7. The remaining Phase 7 work is implementation and evidence; Phase 8 node deployment does not begin until these gates pass:
+This document completes the architecture decision portion of Phase 7. Code-level foundations exist, but production implementation and evidence remain. Phase 8 node deployment does not begin until these gates pass:
 
 - A protocol interoperability test validates client/relay key authentication, expiry, replay resistance, configuration signature checks, and revocation.
 - The relay rejects unauthenticated peers and disallowed egress, enforces resource limits, and cannot act as an open proxy.
-- Direct and relayed route measurements use identical targets and methods, include loss and variation, and persist a reproducible record.
+- Direct and relayed route measurements use identical targets and methods, include loss and variation, and persist a reproducible record. The scoring, recommendation policy, and bounded local persistence are implemented and tested, but no live measurement producer or UI is connected.
 - IPv4, IPv6, DNS, sleep/resume, adapter changes, relay loss, service crash, app crash, reboot recovery, game exit, and uninstall all return to the declared route policy.
 - A signed Windows service/driver package passes clean install, upgrade, rollback, and removal tests. Any WFP callout is reviewed for least privilege and does not inspect or alter game payloads.
 - Compatibility testing covers supported games and anti-cheat configurations. Any conflict disables the relay for that configuration; no bypass is attempted.
@@ -84,7 +84,7 @@ This document completes the architecture decision portion of Phase 7. The remain
 
 ## Implementation order
 
-1. The relay-independent score model and deterministic tests are implemented in `src-tauri/src/relay.rs`; it remains disconnected from the UI until real comparable measurements can feed it.
+1. The relay-independent score model, three-window recommendation/failback policy, and deterministic tests are implemented in `src-tauri/src/relay.rs`; `src-tauri/src/storage.rs` persists rescored comparisons locally, capped at 1,000. These modules remain disconnected from the UI until real comparable measurements can feed them.
 2. Signed node-manifest parsing, pinned Ed25519 verification, schema checks, expiry, and generation rollback checks are implemented in `src-tauri/src/relay_manifest.rs`. `src-tauri/src/relay_client.rs` adds the HTTPS-only, exact-host, no-redirect fetch and bounded body path; SQLite stores the signed envelope and accepted generation and cached data is re-verified before reuse. The fetch path is not invoked because this build has no production endpoint or trusted public keys.
 3. `src-tauri/src/relay_session.rs` validates short-lived Ed25519-signed session grants bound to a manifest node, client WireGuard public key, and exact narrow destination prefixes. SQLite records one-time consumption before `src-tauri/src/relay_tunnel.rs` will create a lease; the lease private key must derive the granted public key. Expiry, replay across restart, scope mismatch, key mismatch, and broad routes are tested. The profile builder zeroizes the private-key decode buffer and rendered profile. `src-tauri/src/relay_lifecycle.rs` and `src-tauri/src/relay_coordinator.rs` persist ordered setup phases before invoking an injectable backend, recover interrupted sessions at startup, and restore to Direct after setup failures or missed heartbeats. `src-tauri/src/relay_interop.rs` completes a BoringTun handshake over ephemeral loopback UDP and sends an encrypted IPv4 packet to a local test relay for decryption and encrypted echo. No virtual adapter or host routes are involved. Revocation, a production signing key/issuer, server-side session invalidation, and a production Windows route adapter/service remain unconnected.
 4. Evaluate process-aware WFP routing, IPv4/IPv6 and DNS behavior, and anti-cheat conflicts. Do not enable game-only routing until that evaluation is successful.
