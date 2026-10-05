@@ -28,6 +28,22 @@ flowchart LR
 
 The WireGuard protocol uses the Noise IK handshake and authenticated encryption for its data plane. WFP ALE connect-redirect layers can change a connection's destination; Windows documents WFP callout drivers as the mechanism for filtering actions that require specialized processing. A production app-specific tunnel therefore requires a separately signed, reviewed Windows component and anti-cheat compatibility testing; the current app must not simulate this with game injection or undocumented hooks. See [WireGuard protocol](https://www.wireguard.com/protocol/), [Windows ALE layers](https://learn.microsoft.com/en-us/windows/win32/fwp/ale-layers), and [WFP callout driver guidance](https://learn.microsoft.com/en-us/windows-hardware/drivers/network/callout-driver-programming-considerations).
 
+### Signed manifest wire format
+
+The manifest verifier in `src-tauri/src/relay_manifest.rs` accepts a UTF-8 JSON envelope with exactly these fields:
+
+```json
+{
+  "keyId": "vyre-relay-2026-a",
+  "payload": "BASE64_OF_EXACT_UTF8_JSON_PAYLOAD",
+  "signature": "BASE64_OF_64_BYTE_ED25519_SIGNATURE"
+}
+```
+
+The signature covers the byte sequence `VYRE-RELAY-MANIFEST-V1\0 || keyId || \0 || decodedPayloadBytes`. This binds the signature to VYRE's manifest purpose and signing key ID while avoiding JSON canonicalization ambiguity. The decoded payload uses schema version 1 and fields `generation`, `issuedAt`, `expiresAt`, and `nodes`. Each node has `id`, `region`, `endpointHost`, `endpointPort`, `publicKey` (base64 32-byte WireGuard key), and `protocol` (currently exactly `wireguard-udp`). The verifier caps the envelope/payload at 400/256 KiB, accepts at most 64 nodes, permits at most five minutes of clock skew, limits manifest lifetime to 24 hours, rejects duplicate node IDs/keys, and requires monotonically increasing generations from its caller. Unknown fields and non-canonical base64 are rejected.
+
+The caller must supply a release-pinned Ed25519 key map and persist the accepted generation. No production signing key, pin, manifest URL, or fetch command is included in this build, so a valid test signature alone cannot publish a node in the app.
+
 ## Route selection and measurements
 
 1. Identify the game process using the existing process catalogue. Resolve a game destination only from supported Windows connection metadata or an explicit user-selected server endpoint. Do not guess a game server from a generic public probe.
@@ -68,8 +84,8 @@ This document completes the architecture decision portion of Phase 7. The remain
 
 ## Implementation order
 
-1. The relay-independent score model and deterministic tests are implemented in `src-tauri/src/relay.rs`; keep it disconnected from the UI until real comparable measurements can feed it.
-2. Implement signed node-manifest parsing and signature/expiry rejection tests.
+1. The relay-independent score model and deterministic tests are implemented in `src-tauri/src/relay.rs`; it remains disconnected from the UI until real comparable measurements can feed it.
+2. Signed node-manifest parsing, pinned Ed25519 verification, schema checks, expiry, and generation rollback checks are implemented in `src-tauri/src/relay_manifest.rs`. A signed application build must still provide the actual trusted public keys and persist the last accepted generation before fetching and displaying candidates.
 3. Prototype the service-to-tunnel lifecycle against a local test relay, first with an explicit destination prefix and a watchdog restore journal.
 4. Evaluate process-aware WFP routing, IPv4/IPv6 and DNS behavior, and anti-cheat conflicts. Do not enable game-only routing until that evaluation is successful.
 5. Add Smart Route UI only after the route comparison command returns measured candidate data. Keep all relay pages in a clear unavailable state until a deployed node and passing acceptance gates are present.
