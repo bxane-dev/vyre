@@ -11,6 +11,7 @@ pub mod relay_manifest;
 pub mod relay_session;
 pub mod relay_tunnel;
 mod routing;
+mod steam_games;
 mod storage;
 mod system;
 mod traffic;

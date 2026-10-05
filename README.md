@@ -34,6 +34,7 @@ src-tauri/src/
   lib.rs                     Command API, session workflow, restore coordinator
   network.rs                 Windows ICMP ping probe and score
   system.rs                  Process, CPU, RAM, adapter byte counters, game detection
+  steam_games.rs             Installed Steam game recognition and App ID matching
   priority.rs                Windows process priority API wrapper
   relay.rs                   Route scoring and stability-gated recommendations
   relay_client.rs            Pinned-host HTTPS manifest fetch/cache boundary
@@ -61,7 +62,7 @@ The interface invokes only named Rust commands. It does not expose a general she
 - Smart Route page with measured direct-route quality and a Windows trace to the probe target. No relay route is advertised.
 - Optimizations page with working Safe and Competitive controls, a detected-game selector, benchmark result, and restore action.
 - Safe and Competitive mode preference saved per game. The selection loads for the active game; BOOST GAME remains the explicit apply action.
-- Automatic detection for common game EXE names plus custom EXE paths. Minecraft Java is reported only when its command line identifies Minecraft.
+- Automatic detection for common game EXE names, running Steam games from the local Steam library manifests (with their Steam App IDs), and custom EXE paths. Minecraft Java is reported only when its command line identifies Minecraft. No Steam credentials or account ownership data are read.
 - Safe mode: baseline and follow-up probes with no system change.
 - Competitive mode: captures a 15-second frame baseline, saves the original priority, and temporarily tests **Above Normal**. A second PresentMon capture must show at least a 3% improvement in 1% low while average FPS stays within 2% of baseline; otherwise VYRE restores the original priority. Failed after-capture also triggers restore. A SQLite journal supports restore on game close, normal exit, manual restore, or next launch after a crash.
 - Before/after probe results and session history in local SQLite.
@@ -71,7 +72,7 @@ The interface invokes only named Rust commands. It does not expose a general she
 - Optional centered, always-on-top performance overlay with live probe/network and system readings. FPS and 1% low show the most recent on-demand PresentMon capture and its age; this is not a continuous FPS feed.
 - The window opens centered. The icon is a V.
 
-The network score is a simple local indicator based on probe ping, jitter, and loss. It is not an FPS score or a validated prediction of game performance. Process priority cannot shorten the internet route; before/after probe changes may be ordinary variation.
+The network score is a simple local indicator based on probe ping, jitter, and loss. It is not an FPS score or a validated prediction of game performance. Process priority cannot shorten the internet route; before/after probe changes may be ordinary variation. The current probe still targets `1.1.1.1`, not an active game server, and VYRE does not reserve ISP bandwidth. Steam game names and App IDs come from local Steam install manifests; [SteamDB says it has no public API and does not allow automated scraping](https://steamdb.info/faq/), so VYRE does not scrape its site. The local App ID can be looked up on SteamDB by its app page.
 
 ## Planned, not active
 

@@ -1,3 +1,4 @@
+use crate::steam_games::{discover_installed_games, game_for_executable, SteamGameInstall};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path, sync::Mutex, time::Instant};
 use sysinfo::{Networks, System};
@@ -31,6 +32,7 @@ pub struct Game {
     pub cpu_percent: f32,
     pub memory_mb: f64,
     pub custom: bool,
+    pub steam_app_id: Option<u32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -68,6 +70,7 @@ pub struct SystemMonitor {
     system: Mutex<System>,
     networks: Mutex<Networks>,
     network_at: Mutex<Instant>,
+    steam_library: Mutex<Option<(Instant, Vec<SteamGameInstall>)>>,
 }
 
 impl SystemMonitor {
@@ -78,6 +81,7 @@ impl SystemMonitor {
             system: Mutex::new(system),
             networks: Mutex::new(Networks::new_with_refreshed_list()),
             network_at: Mutex::new(Instant::now()),
+            steam_library: Mutex::new(None),
         }
     }
 
@@ -116,6 +120,25 @@ impl SystemMonitor {
                 })
             })
             .collect();
+        let steam_games = {
+            let mut cached = self.steam_library.lock().unwrap();
+            if cached
+                .as_ref()
+                .is_none_or(|(at, _)| at.elapsed() >= std::time::Duration::from_secs(60))
+            {
+                let steam_executable = system
+                    .processes()
+                    .values()
+                    .find(|process| process.name().eq_ignore_ascii_case("steam.exe"))
+                    .and_then(|process| process.exe())
+                    .map(Path::to_path_buf);
+                *cached = Some((Instant::now(), discover_installed_games(steam_executable)));
+            }
+            cached
+                .as_ref()
+                .map(|(_, games)| games.clone())
+                .unwrap_or_default()
+        };
         let mut games = Vec::new();
         let mut processes = Vec::new();
         for (pid, process) in system.processes() {
@@ -137,10 +160,29 @@ impl SystemMonitor {
                         .exe()
                         .is_some_and(|running| running.to_string_lossy().eq_ignore_ascii_case(path))
                 });
-            if let Some((name, exe, custom_flag)) = known
-                .map(|(name, _)| (name.to_string(), exe_name.clone(), false))
-                .or_else(|| custom.map(|(name, path)| (name.clone(), path.clone(), true)))
-            {
+            let executable_path = process.exe();
+            let steam_game =
+                executable_path.and_then(|path| game_for_executable(path, &steam_games));
+            let detected = if let Some((name, _)) = known {
+                Some((
+                    name.to_string(),
+                    exe_name.clone(),
+                    false,
+                    steam_game.map(|game| game.app_id),
+                ))
+            } else if let Some(game) = steam_game {
+                executable_path.map(|path| {
+                    (
+                        game.name.clone(),
+                        path.to_string_lossy().into_owned(),
+                        false,
+                        Some(game.app_id),
+                    )
+                })
+            } else {
+                custom.map(|(name, path)| (name.clone(), path.clone(), true, None))
+            };
+            if let Some((name, exe, custom_flag, steam_app_id)) = detected {
                 games.push(Game {
                     name,
                     exe,
@@ -149,6 +191,7 @@ impl SystemMonitor {
                     cpu_percent: process.cpu_usage(),
                     memory_mb: process.memory() as f64 / 1_048_576.0,
                     custom: custom_flag,
+                    steam_app_id,
                 });
             }
             if process.cpu_usage() > 0.1 || process.memory() > 250_000_000 {

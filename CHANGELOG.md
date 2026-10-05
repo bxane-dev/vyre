@@ -17,6 +17,7 @@
 
 ### Added
 
+- Running Steam games are now matched automatically by installed library path and App ID from Steam's local manifests, including titles absent from VYRE's previous hard-coded process list. Steam names/App IDs are read locally; VYRE does not access Steam account credentials or ownership data.
 - Optional centered, always-on-top overlay for live probe/network and system readings, with the latest PresentMon FPS and 1% low clearly identified as a timestamped capture.
 - Competitive BOOST now captures 15-second PresentMon samples before and after a temporary priority change. It keeps the change only when the 1% low improves by at least 3% and average FPS stays within 2%; it restores the original value when the threshold is missed or after-capture fails.
 - Frame analysis now reports average and p95 frame time, frame-time deviation, long-frame spikes, dropped frames, average CPU busy time, GPU work time, and display latency when PresentMon provides those columns.
