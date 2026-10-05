@@ -4,6 +4,7 @@
 
 ### Added
 
+- Optional centered, always-on-top overlay for live probe/network and system readings, with the latest PresentMon FPS and 1% low clearly identified as a timestamped capture.
 - Competitive BOOST now captures 15-second PresentMon samples before and after a temporary priority change. It keeps the change only when the 1% low improves by at least 3% and average FPS stays within 2%; it restores the original value when the threshold is missed or after-capture fails.
 - Frame analysis now reports average and p95 frame time, frame-time deviation, long-frame spikes, dropped frames, average CPU busy time, GPU work time, and display latency when PresentMon provides those columns.
 - SQLite-backed Safe and Competitive mode preferences per game. Selecting a detected game loads its saved profile; applying the profile remains a manual action.
@@ -14,6 +15,7 @@
 ### Limits
 
 - Frame capture requires Windows to allow the current user to start an ETW trace. Some protected games or accounts may deny it. No automatic elevation is requested.
+- FPS in the overlay comes from the latest on-demand PresentMon capture; continuous frame-rate monitoring is not included.
 - GPU utilization, temperatures, and persistent frame history are not included in this capture milestone.
 
 ## 0.1.0 — 2026-10-04

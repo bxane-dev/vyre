@@ -60,13 +60,14 @@ The interface invokes only named Rust commands. It does not expose a general she
 - Lag Doctor: a 30-probe diagnosis of loss, jitter, CPU, and RAM, with evidence and limitations.
 - JSON diagnostic report export.
 - Local SQLite history for up to 100 recent frame captures, with average FPS and low-percentile comparisons to each game's prior capture, plus frame-time percentiles and spike counts.
+- Optional centered, always-on-top performance overlay with live probe/network and system readings. FPS and 1% low show the most recent on-demand PresentMon capture and its age; this is not a continuous FPS feed.
 - The window opens centered. The icon is a V.
 
 The network score is a simple local indicator based on probe ping, jitter, and loss. It is not an FPS score or a validated prediction of game performance. Process priority cannot shorten the internet route; before/after probe changes may be ordinary variation.
 
 ## Planned, not active
 
-GPU/VRAM/temperature sensors, per-process bandwidth, QoS and bandwidth shaping, bufferbloat under load, MTU and DNS tests, external overlay, relay nodes, game-only tunneling, privileged Windows service, updater, and VYRE code signing. Existing pages identify these limits without displaying invented readings or controls that appear to work.
+GPU/VRAM/temperature sensors, per-process bandwidth, QoS and bandwidth shaping, bufferbloat under load, MTU and DNS tests, relay nodes, game-only tunneling, privileged Windows service, updater, and VYRE code signing. Existing pages identify these limits without displaying invented readings or controls that appear to work.
 
 Frame capture bundles PresentMon 2.6.0 from the official [GameTechDev/PresentMon release](https://github.com/GameTechDev/PresentMon/releases/tag/v2.6.0) and includes its MIT license at `src-tauri/resources/PresentMon-LICENSE.txt`. PresentMon records displayed frame timing through Windows event tracing; Windows permissions and game protection can prevent capture. VYRE does not auto-elevate.
 

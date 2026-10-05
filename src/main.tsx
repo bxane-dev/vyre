@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Activity, ArrowDownRight, ArrowRight, ArrowUpRight, BarChart3, CheckCircle2, ChevronDown, CircleHelp, Clock3, Cpu, Crosshair, Gauge, Gamepad2, HeartPulse, History, LayoutDashboard, MemoryStick, Network, Plus, RotateCcw, Route, Settings2, ShieldCheck, Signal, SlidersHorizontal, Sparkles, Wifi, X } from 'lucide-react';
 import LiveModules from './LiveModules';
 import vyreLogo from './assets/vyre-logo.png';
@@ -130,6 +131,10 @@ function App() {
     catch (cause) { setError(String(cause)); }
     finally { setBusy(null); }
   }
+  async function toggleOverlay() {
+    try { const open = await invoke<boolean>('toggle_overlay'); setNotice(open ? 'Performance overlay opened.' : 'Performance overlay closed.'); }
+    catch (cause) { setError(String(cause)); }
+  }
   const historyRows = useMemo(() => sessions.map(session => ({ ...session, before: JSON.parse(session.beforeJson) as Probe, after: JSON.parse(session.afterJson) as Probe })), [sessions]);
 
   return <div className="app-shell"><aside className="sidebar"><div className="brand"><img className="brand-logo" src={vyreLogo} alt="vyre"/><span className="brand-tagline">PERFORMANCE ENGINE</span></div><div className="side-label">WORKSPACE</div><nav>{sections.map(item => <button key={item.title} className={`nav-item ${section === item.title ? 'active' : ''}`} onClick={() => setSection(item.title)}><item.icon size={18}/><span>{item.title}</span></button>)}</nav><div className="side-bottom"><div className="safety-card"><ShieldCheck size={18}/><div><b>Safe by design</b><span>External monitoring. Reversible changes.</span></div></div><div className="version">VYRE 0.1.0</div></div></aside>
@@ -171,8 +176,29 @@ function App() {
       onTrace={() => void runTrace()}
       onCaptureFrames={() => void captureFrames()}
     />
+    {section === 'Settings' && <div className="panel module-panel overlay-setting"><div className="panel-head"><div><h3>Performance overlay</h3><p>Centered, always-on-top window with live network and system readings. FPS is labeled with its last capture time.</p></div><Gauge size={18}/></div><button className="button secondary" disabled={!isTauri} onClick={() => void toggleOverlay()}>Open / close overlay</button><p className="fine-print">Separate VYRE window; no game injection. Some games or anti-cheat systems may not display third-party overlays.</p></div>}
     {section === 'Settings' && <><div className="panel settings-panel"><div className="panel-head"><div><h3>{activeGame ? `${activeGame.name} profile` : 'Default optimization mode'}</h3><p>{activeGame ? 'Saved for this game and loaded when you select it. BOOST GAME is still manual.' : 'Choose which actions BOOST GAME may apply when no game is selected.'}</p></div></div><div className="mode-options">{['Safe', 'Competitive', 'Maximum', 'Custom'].map(mode => <button key={mode} className={`mode-option ${profileMode === mode ? 'selected' : ''}`} disabled={mode === 'Maximum' || mode === 'Custom' || !isTauri} onClick={() => changeMode(mode)}><span><b>{mode}</b><small>{mode === 'Safe' ? 'Measure only; make no system change.' : mode === 'Competitive' ? 'Temporary Above Normal process priority.' : 'Not available in this version.'}</small></span>{profileMode === mode ? <CheckCircle2 size={18}/> : mode === 'Maximum' || mode === 'Custom' ? <Clock3 size={17}/> : <ArrowRight size={17}/>}</button>)}</div></div><div className="panel info-panel"><h3>Local-first privacy</h3><p>Game profiles, probe measurements, and session history stay in vyre’s local SQLite database. No telemetry account or cloud upload is included.</p></div></>}
     {section === 'Restore' && <div className="panel restore-panel"><div className="restore-symbol"><RotateCcw size={31}/></div><h2>Restore everything</h2><p>Return any running game process priority changed by vyre to its saved original value. Restore also runs on normal app exit, game exit, and next launch after a crash.</p><div className="restore-count"><span>ACTIVE TEMPORARY CHANGES</span><strong>{data?.activeChanges ?? '—'}</strong></div><button className="button primary" disabled={!!busy || !isTauri || !data?.activeChanges} onClick={restore}><RotateCcw size={17}/> RESTORE EVERYTHING</button></div>}
     <footer className="footer"><span><ShieldCheck size={14}/> No game injection or packet modification</span><span>Last sample {data ? new Date(data.at).toLocaleTimeString() : '—'}</span></footer></div></main></div>;
 }
-createRoot(document.getElementById('root')!).render(<App/>);
+
+function OverlayApp() {
+  const [data, setData] = useState<Snapshot | null>(null);
+  const [capture, setCapture] = useState<FrameSession | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    document.body.classList.add('overlay-mode');
+    let active = true;
+    const refresh = async () => { try { const next = await invoke<Snapshot>('snapshot'); if (active) { setData(next); setError(false); } } catch { if (active) setError(true); } };
+    const refreshFrames = async () => { try { const rows = await invoke<FrameSession[]>('frame_history'); if (active) setCapture(rows[0] ?? null); } catch { if (active) setCapture(null); } };
+    void refresh(); void refreshFrames();
+    const timer = window.setInterval(() => void refresh(), 3000);
+    const frameTimer = window.setInterval(() => void refreshFrames(), 15000);
+    return () => { active = false; window.clearInterval(timer); window.clearInterval(frameTimer); document.body.classList.remove('overlay-mode'); };
+  }, []);
+  const ageSeconds = capture ? Math.max(0, Math.floor((Date.now() - Date.parse(capture.at)) / 1000)) : null;
+  return <div className="overlay-shell"><header className="overlay-header"><div><b>VYRE</b><span>LIVE SESSION</span></div><button aria-label="Close overlay" onClick={() => void getCurrentWindow().close()}>×</button></header><div className="overlay-metrics"><div><span>PING</span><b>{units(data?.probe.averageMs, ' ms')}</b></div><div><span>JITTER</span><b>{units(data?.probe.jitterMs, ' ms')}</b></div><div><span>LOSS</span><b>{pct(data?.probe.lossPercent)}</b></div><div><span>CPU</span><b>{pct(data?.machine.cpuPercent)}</b></div><div><span>RAM</span><b>{pct(data?.machine.ramPercent)}</b></div><div><span>LAST FPS</span><b>{capture ? capture.averageFps.toFixed(0) : '—'}</b><small>{capture ? `${capture.onePercentLow.toFixed(0)} 1% low · ${ageSeconds}s ago` : 'Capture on Performance page'}</small></div></div><footer className="overlay-footer"><span>{error ? 'Waiting for live telemetry' : 'Live network and system data'}</span><span>FPS from last PresentMon capture</span></footer></div>;
+}
+
+const isOverlayWindow = (window as Window & { __VYRE_OVERLAY__?: boolean }).__VYRE_OVERLAY__ === true;
+createRoot(document.getElementById('root')!).render(isOverlayWindow ? <OverlayApp/> : <App/>);

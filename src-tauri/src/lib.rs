@@ -346,7 +346,7 @@ fn export_report(app: tauri::AppHandle, state: State<AppState>) -> Result<String
         "topProcesses": machine.top_processes,
         "frameCaptures": frame_captures,
         "activeTemporaryChanges": active_changes,
-        "limitations": ["Probe target is not a game server", "FPS is available only through an on-demand 15-second capture; no continuous overlay is included", "No bufferbloat test or relay nodes are available"]
+        "limitations": ["Probe target is not a game server", "FPS is available only through an on-demand 15-second capture; the overlay does not provide continuous FPS monitoring", "No bufferbloat test or relay nodes are available"]
     });
     let directory = app
         .path()
@@ -488,6 +488,31 @@ fn frame_history(state: State<AppState>) -> Result<Vec<storage::FrameSessionReco
     storage::frame_history(&*state.db.lock().map_err(|err| err.to_string())?)
 }
 
+#[tauri::command]
+async fn toggle_overlay(app: tauri::AppHandle) -> Result<bool, String> {
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        overlay.close().map_err(|err| err.to_string())?;
+        return Ok(false);
+    }
+    tauri::WebviewWindowBuilder::new(&app, "overlay", tauri::WebviewUrl::App("index.html".into()))
+        .title("vyre performance overlay")
+        .inner_size(470.0, 190.0)
+        .min_inner_size(470.0, 190.0)
+        .max_inner_size(470.0, 190.0)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focusable(false)
+        .focused(false)
+        .center()
+        .initialization_script("window.__VYRE_OVERLAY__ = true;")
+        .build()
+        .map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .setup(|app| {
@@ -524,7 +549,8 @@ pub fn run() {
             traffic_connections,
             trace_route,
             capture_frames,
-            frame_history
+            frame_history,
+            toggle_overlay
         ])
         .build(tauri::generate_context!())
         .expect("failed to build vyre");
