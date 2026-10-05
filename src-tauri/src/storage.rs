@@ -56,6 +56,44 @@ pub struct JournalEntry {
     pub original_priority: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelayJournalPhase {
+    Prepared,
+    TunnelReady,
+    RoutesActive,
+    Restoring,
+}
+
+impl RelayJournalPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Prepared => "prepared",
+            Self::TunnelReady => "tunnel_ready",
+            Self::RoutesActive => "routes_active",
+            Self::Restoring => "restoring",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "prepared" => Ok(Self::Prepared),
+            "tunnel_ready" => Ok(Self::TunnelReady),
+            "routes_active" => Ok(Self::RoutesActive),
+            "restoring" => Ok(Self::Restoring),
+            _ => Err("Relay restore journal contains an unknown phase.".into()),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RelayJournalEntry {
+    pub session_id: String,
+    pub phase: RelayJournalPhase,
+    /// Opaque, DPAPI-protected restore snapshot. The app never parses it.
+    pub protected_restore_blob: Vec<u8>,
+    pub last_error: Option<String>,
+}
+
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
@@ -68,7 +106,8 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, change TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS frame_sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, pid INTEGER NOT NULL, frame_count INTEGER NOT NULL, average_fps REAL NOT NULL, one_percent_low REAL NOT NULL, point_one_percent_low REAL NOT NULL, average_frame_time_ms REAL NOT NULL DEFAULT 0, p95_frame_time_ms REAL NOT NULL DEFAULT 0, frame_time_std_dev_ms REAL NOT NULL DEFAULT 0, frame_time_spikes INTEGER NOT NULL DEFAULT 0, dropped_frames INTEGER NOT NULL DEFAULT 0, average_cpu_busy_ms REAL, average_gpu_time_ms REAL, average_display_latency_ms REAL, capture_seconds INTEGER NOT NULL, csv_path TEXT NOT NULL, analysis_version INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS change_journal (pid INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, original_priority INTEGER NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS relay_manifest_state (id INTEGER PRIMARY KEY CHECK(id = 1), generation INTEGER NOT NULL, signer_key_id TEXT NOT NULL, accepted_at TEXT NOT NULL, envelope_json TEXT NOT NULL);")
+        CREATE TABLE IF NOT EXISTS relay_manifest_state (id INTEGER PRIMARY KEY CHECK(id = 1), generation INTEGER NOT NULL, signer_key_id TEXT NOT NULL, accepted_at TEXT NOT NULL, envelope_json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS relay_session_journal (session_id TEXT PRIMARY KEY, phase TEXT NOT NULL CHECK(phase IN ('prepared','tunnel_ready','routes_active','restoring')), protected_restore_blob BLOB NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_error TEXT); ")
         .map_err(|err| err.to_string())?;
     let columns = {
         let mut statement = connection
@@ -100,6 +139,127 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         }
     }
     Ok(connection)
+}
+
+/// Persist the encrypted restore snapshot before any future tunnel or route side effect.
+pub fn begin_relay_session(
+    db: &Connection,
+    session_id: &str,
+    protected_restore_blob: &[u8],
+) -> Result<(), String> {
+    if !valid_relay_session_id(session_id)
+        || protected_restore_blob.is_empty()
+        || protected_restore_blob.len() > 64 * 1024
+    {
+        return Err("Relay session journal input is invalid.".into());
+    }
+    let now = Utc::now().to_rfc3339();
+    db.execute(
+        "INSERT INTO relay_session_journal(session_id,phase,protected_restore_blob,created_at,updated_at,last_error) VALUES(?1,'prepared',?2,?3,?3,NULL)",
+        params![session_id, protected_restore_blob, now],
+    ).map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+/// Enforce the forward lifecycle. The restore phase may be entered from any
+/// incomplete phase so partial setup can be rolled back after an error.
+pub fn advance_relay_session(
+    db: &Connection,
+    session_id: &str,
+    next: RelayJournalPhase,
+) -> Result<(), String> {
+    let allowed_previous: &[&str] = match next {
+        RelayJournalPhase::TunnelReady => &["prepared"],
+        RelayJournalPhase::RoutesActive => &["tunnel_ready"],
+        RelayJournalPhase::Restoring => &["prepared", "tunnel_ready", "routes_active", "restoring"],
+        RelayJournalPhase::Prepared => {
+            return Err("Relay session lifecycle transition is invalid.".into())
+        }
+    };
+    let placeholders = (0..allowed_previous.len())
+        .map(|index| format!("?{}", index + 4))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "UPDATE relay_session_journal SET phase=?2, updated_at=?3, last_error=NULL WHERE session_id=?1 AND phase IN ({placeholders})"
+    );
+    let mut values = vec![
+        rusqlite::types::Value::Text(session_id.to_string()),
+        rusqlite::types::Value::Text(next.as_str().to_string()),
+        rusqlite::types::Value::Text(Utc::now().to_rfc3339()),
+    ];
+    values.extend(
+        allowed_previous
+            .iter()
+            .map(|phase| rusqlite::types::Value::Text((*phase).to_string())),
+    );
+    let changed = db
+        .execute(&sql, rusqlite::params_from_iter(values))
+        .map_err(|err| err.to_string())?;
+    if changed != 1 {
+        return Err("Relay session lifecycle transition is invalid.".into());
+    }
+    Ok(())
+}
+
+/// Retain the recovery record if restoration failed; do not delete it until
+/// the caller has confirmed that the original route state has been restored.
+pub fn record_relay_restore_failure(db: &Connection, session_id: &str) -> Result<(), String> {
+    let changed = db.execute(
+        "UPDATE relay_session_journal SET phase='restoring', updated_at=?2, last_error=?3 WHERE session_id=?1",
+        params![session_id, Utc::now().to_rfc3339(), "Route restoration did not complete; retry is required."],
+    ).map_err(|err| err.to_string())?;
+    if changed != 1 {
+        return Err("Relay restore journal entry was not found.".into());
+    }
+    Ok(())
+}
+
+pub fn pending_relay_recovery(db: &Connection) -> Result<Vec<RelayJournalEntry>, String> {
+    let mut statement = db.prepare(
+        "SELECT session_id,phase,protected_restore_blob,last_error FROM relay_session_journal ORDER BY created_at",
+    ).map_err(|err| err.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|err| err.to_string())?;
+    rows.map(|row| {
+        let (session_id, phase, protected_restore_blob, last_error) =
+            row.map_err(|err| err.to_string())?;
+        Ok(RelayJournalEntry {
+            session_id,
+            phase: RelayJournalPhase::parse(&phase)?,
+            protected_restore_blob,
+            last_error,
+        })
+    })
+    .collect()
+}
+
+pub fn clear_relay_session(db: &Connection, session_id: &str) -> Result<(), String> {
+    let changed = db
+        .execute(
+            "DELETE FROM relay_session_journal WHERE session_id=?1 AND phase='restoring'",
+            [session_id],
+        )
+        .map_err(|err| err.to_string())?;
+    if changed != 1 {
+        return Err("Relay session can be cleared only after restoration is confirmed.".into());
+    }
+    Ok(())
+}
+
+fn valid_relay_session_id(value: &str) -> bool {
+    (16..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 pub fn relay_manifest_generation(db: &Connection) -> Result<u64, String> {
@@ -419,5 +579,76 @@ mod relay_manifest_store_tests {
                 crate::relay_manifest::ManifestError::ManifestExpired
             ))
         );
+    }
+
+    #[test]
+    fn relay_restore_journal_survives_restart_and_clears_only_after_confirmed_restore() {
+        let path = std::env::temp_dir().join(format!(
+            "vyre-relay-restore-test-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let db = open(&path).unwrap();
+            begin_relay_session(
+                &db,
+                "session-0123456789abcdef",
+                b"dpapi-protected-test-snapshot",
+            )
+            .unwrap();
+            assert!(advance_relay_session(
+                &db,
+                "session-0123456789abcdef",
+                RelayJournalPhase::RoutesActive
+            )
+            .is_err());
+            advance_relay_session(
+                &db,
+                "session-0123456789abcdef",
+                RelayJournalPhase::TunnelReady,
+            )
+            .unwrap();
+            advance_relay_session(
+                &db,
+                "session-0123456789abcdef",
+                RelayJournalPhase::RoutesActive,
+            )
+            .unwrap();
+        }
+
+        let db = open(&path).unwrap();
+        let pending = pending_relay_recovery(&db).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].phase, RelayJournalPhase::RoutesActive);
+        assert_eq!(
+            pending[0].protected_restore_blob,
+            b"dpapi-protected-test-snapshot"
+        );
+        assert!(clear_relay_session(&db, "session-0123456789abcdef").is_err());
+
+        record_relay_restore_failure(&db, "session-0123456789abcdef").unwrap();
+        let failed = pending_relay_recovery(&db).unwrap();
+        assert_eq!(failed[0].phase, RelayJournalPhase::Restoring);
+        assert_eq!(
+            failed[0].last_error.as_deref(),
+            Some("Route restoration did not complete; retry is required.")
+        );
+        advance_relay_session(
+            &db,
+            "session-0123456789abcdef",
+            RelayJournalPhase::Restoring,
+        )
+        .unwrap();
+        clear_relay_session(&db, "session-0123456789abcdef").unwrap();
+        assert!(pending_relay_recovery(&db).unwrap().is_empty());
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn relay_restore_journal_rejects_invalid_ids_and_empty_snapshots() {
+        let db = open(Path::new(":memory:")).unwrap();
+        assert!(begin_relay_session(&db, "bad", b"ciphertext").is_err());
+        assert!(begin_relay_session(&db, "session-0123456789abcdef", b"").is_err());
     }
 }
