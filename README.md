@@ -35,9 +35,11 @@ src-tauri/src/
   network.rs                 Windows ICMP ping probe and score
   system.rs                  Process, CPU, RAM, adapter byte counters, game detection
   priority.rs                Windows process priority API wrapper
+  relay.rs                   Relay-independent route scoring primitives
   routing.rs                 Direct route trace through Windows tracert
   traffic.rs                 TCP connection ownership through Windows netstat
   storage.rs                 SQLite sessions, custom games, restore journal
+docs/relay-architecture.md   Relay security, routing, recovery, and implementation gates
 src-tauri/capabilities/      Tauri window capability
 src-tauri/icons/             Application icons
 ```
@@ -71,7 +73,7 @@ GPU/VRAM/temperature sensors, per-process bandwidth, QoS and bandwidth shaping, 
 
 Frame capture bundles PresentMon 2.6.0 from the official [GameTechDev/PresentMon release](https://github.com/GameTechDev/PresentMon/releases/tag/v2.6.0) and includes its MIT license at `src-tauri/resources/PresentMon-LICENSE.txt`. PresentMon records displayed frame timing through Windows event tracing; Windows permissions and game protection can prevent capture. VYRE does not auto-elevate.
 
-Future privileged features should run in a separate least-privilege Windows service. The service should authenticate a local IPC client, validate an allowlisted command schema, persist a write-ahead restore journal before changes, and reject operations on protected processes. A relay requires real deployed nodes, mutual authentication, encryption, and route benchmarks against actual destinations before it can claim route improvement.
+Future privileged features should run in a separate least-privilege Windows service. The service should authenticate a local IPC client, validate an allowlisted command schema, persist a write-ahead restore journal before changes, and reject operations on protected processes. The relay design and implementation gates are in [docs/relay-architecture.md](docs/relay-architecture.md); there are no deployed nodes, relay protocol implementation, or route-benchmark controls yet.
 
 ## Safety and privacy
 

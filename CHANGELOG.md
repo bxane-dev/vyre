@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Architecture
+
+- Added the Phase 7 relay architecture: authenticated WireGuard data plane, signed node manifests, measured route scoring, Windows service/WFP boundaries, failure recovery, privacy limits, and implementation acceptance gates. This is a design baseline; VYRE still has no relay implementation or deployed nodes.
+- Added an isolated route measurement/scoring model that combines median RTT, p95 deviation, and packet loss and rejects comparisons with different targets or probe methods. It is not connected to live relay measurements or the UI.
+
 ### Added
 
 - Optional centered, always-on-top overlay for live probe/network and system readings, with the latest PresentMon FPS and 1% low clearly identified as a timestamped capture.
