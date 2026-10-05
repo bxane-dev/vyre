@@ -48,7 +48,7 @@ The interface invokes only named Rust commands. It does not expose a general she
 
 - Live probe ping, jitter, and packet loss to **1.1.1.1** using Windows `ping.exe`. These values are **not game-server latency**. Parse failures are shown as unavailable.
 - CPU, RAM, whole-system network transfer rates, and highest-CPU processes from `sysinfo`.
-- Performance page with CPU, RAM, per-process CPU and memory readings, and an on-demand 15-second PresentMon capture for a selected game. Capture shows average FPS, percentile-derived 1% and 0.1% lows, and keeps the raw CSV under the app data `frames` folder.
+- Performance page with CPU, RAM, per-process CPU and memory readings, and an on-demand 15-second PresentMon capture for a selected game. Capture shows average FPS, percentile-derived 1% and 0.1% lows, frame-time percentiles and deviation, long-frame spike and dropped-frame counts, plus per-frame CPU busy, GPU work, and display latency when those metrics are available. The raw CSV is kept in the app data `frames` folder.
 - Traffic page with adapter transfer rates and current TCP connection ownership by process. Connection counts are not per-process bandwidth usage.
 - Smart Route page with measured direct-route quality and a Windows trace to the probe target. No relay route is advertised.
 - Optimizations page with working Safe and Competitive controls, a detected-game selector, benchmark result, and restore action.
@@ -59,7 +59,7 @@ The interface invokes only named Rust commands. It does not expose a general she
 - Before/after probe results and session history in local SQLite.
 - Lag Doctor: a 30-probe diagnosis of loss, jitter, CPU, and RAM, with evidence and limitations.
 - JSON diagnostic report export.
-- Local SQLite history for up to 100 recent frame captures, with average FPS and low-percentile comparisons to each game's prior capture.
+- Local SQLite history for up to 100 recent frame captures, with average FPS and low-percentile comparisons to each game's prior capture, plus frame-time percentiles and spike counts.
 - The window opens centered. The icon is a V.
 
 The network score is a simple local indicator based on probe ping, jitter, and loss. It is not an FPS score or a validated prediction of game performance. Process priority cannot shorten the internet route; before/after probe changes may be ordinary variation.

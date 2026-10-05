@@ -26,8 +26,17 @@ pub struct FrameSessionRecord {
     pub average_fps: f64,
     pub one_percent_low: f64,
     pub point_one_percent_low: f64,
+    pub average_frame_time_ms: f64,
+    pub p95_frame_time_ms: f64,
+    pub frame_time_std_dev_ms: f64,
+    pub frame_time_spikes: usize,
+    pub dropped_frames: usize,
+    pub average_cpu_busy_ms: Option<f64>,
+    pub average_gpu_time_ms: Option<f64>,
+    pub average_display_latency_ms: Option<f64>,
     pub capture_seconds: u32,
     pub csv_path: String,
+    pub analysis_version: u8,
 }
 
 #[derive(Clone)]
@@ -47,9 +56,38 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         CREATE TABLE IF NOT EXISTS game_profiles (exe TEXT PRIMARY KEY, game TEXT NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('Safe','Competitive')));
         CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, change TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS frame_sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, pid INTEGER NOT NULL, frame_count INTEGER NOT NULL, average_fps REAL NOT NULL, one_percent_low REAL NOT NULL, point_one_percent_low REAL NOT NULL, capture_seconds INTEGER NOT NULL, csv_path TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS frame_sessions (id INTEGER PRIMARY KEY, at TEXT NOT NULL, game TEXT NOT NULL, pid INTEGER NOT NULL, frame_count INTEGER NOT NULL, average_fps REAL NOT NULL, one_percent_low REAL NOT NULL, point_one_percent_low REAL NOT NULL, average_frame_time_ms REAL NOT NULL DEFAULT 0, p95_frame_time_ms REAL NOT NULL DEFAULT 0, frame_time_std_dev_ms REAL NOT NULL DEFAULT 0, frame_time_spikes INTEGER NOT NULL DEFAULT 0, dropped_frames INTEGER NOT NULL DEFAULT 0, average_cpu_busy_ms REAL, average_gpu_time_ms REAL, average_display_latency_ms REAL, capture_seconds INTEGER NOT NULL, csv_path TEXT NOT NULL, analysis_version INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS change_journal (pid INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, original_priority INTEGER NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL, game TEXT NOT NULL, mode TEXT NOT NULL);")
         .map_err(|err| err.to_string())?;
+    let columns = {
+        let mut statement = connection
+            .prepare("PRAGMA table_info(frame_sessions)")
+            .map_err(|err| err.to_string())?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|err| err.to_string())?;
+        rows.collect::<Result<std::collections::HashSet<_>, _>>()
+            .map_err(|err| err.to_string())?
+    };
+    for (name, definition) in [
+        ("average_frame_time_ms", "REAL NOT NULL DEFAULT 0"),
+        ("p95_frame_time_ms", "REAL NOT NULL DEFAULT 0"),
+        ("frame_time_std_dev_ms", "REAL NOT NULL DEFAULT 0"),
+        ("frame_time_spikes", "INTEGER NOT NULL DEFAULT 0"),
+        ("dropped_frames", "INTEGER NOT NULL DEFAULT 0"),
+        ("average_cpu_busy_ms", "REAL"),
+        ("average_gpu_time_ms", "REAL"),
+        ("average_display_latency_ms", "REAL"),
+        ("analysis_version", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !columns.contains(name) {
+            connection
+                .execute_batch(&format!(
+                    "ALTER TABLE frame_sessions ADD COLUMN {name} {definition}"
+                ))
+                .map_err(|err| err.to_string())?;
+        }
+    }
     Ok(connection)
 }
 
@@ -134,7 +172,7 @@ pub fn save_session(
 }
 
 pub fn frame_history(db: &Connection) -> Result<Vec<FrameSessionRecord>, String> {
-    let mut statement = db.prepare("SELECT id, at, game, pid, frame_count, average_fps, one_percent_low, point_one_percent_low, capture_seconds, csv_path FROM frame_sessions ORDER BY id DESC LIMIT 100").map_err(|err| err.to_string())?;
+    let mut statement = db.prepare("SELECT id, at, game, pid, frame_count, average_fps, one_percent_low, point_one_percent_low, average_frame_time_ms, p95_frame_time_ms, frame_time_std_dev_ms, frame_time_spikes, dropped_frames, average_cpu_busy_ms, average_gpu_time_ms, average_display_latency_ms, capture_seconds, csv_path, analysis_version FROM frame_sessions ORDER BY id DESC LIMIT 100").map_err(|err| err.to_string())?;
     let rows = statement
         .query_map([], |row| {
             Ok(FrameSessionRecord {
@@ -146,8 +184,17 @@ pub fn frame_history(db: &Connection) -> Result<Vec<FrameSessionRecord>, String>
                 average_fps: row.get(5)?,
                 one_percent_low: row.get(6)?,
                 point_one_percent_low: row.get(7)?,
-                capture_seconds: row.get(8)?,
-                csv_path: row.get(9)?,
+                average_frame_time_ms: row.get(8)?,
+                p95_frame_time_ms: row.get(9)?,
+                frame_time_std_dev_ms: row.get(10)?,
+                frame_time_spikes: row.get(11)?,
+                dropped_frames: row.get(12)?,
+                average_cpu_busy_ms: row.get(13)?,
+                average_gpu_time_ms: row.get(14)?,
+                average_display_latency_ms: row.get(15)?,
+                capture_seconds: row.get(16)?,
+                csv_path: row.get(17)?,
+                analysis_version: row.get(18)?,
             })
         })
         .map_err(|err| err.to_string())?;
@@ -159,9 +206,12 @@ pub fn save_frame_session(
     db: &Connection,
     capture: &crate::frames::FrameCapture,
 ) -> Result<(), String> {
-    db.execute("INSERT INTO frame_sessions(at,game,pid,frame_count,average_fps,one_percent_low,point_one_percent_low,capture_seconds,csv_path) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![
+    db.execute("INSERT INTO frame_sessions(at,game,pid,frame_count,average_fps,one_percent_low,point_one_percent_low,average_frame_time_ms,p95_frame_time_ms,frame_time_std_dev_ms,frame_time_spikes,dropped_frames,average_cpu_busy_ms,average_gpu_time_ms,average_display_latency_ms,capture_seconds,csv_path,analysis_version) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,1)", params![
         Utc::now().to_rfc3339(), capture.game, capture.pid, capture.frame_count,
         capture.average_fps, capture.one_percent_low, capture.point_one_percent_low,
+        capture.average_frame_time_ms, capture.p95_frame_time_ms, capture.frame_time_std_dev_ms,
+        capture.frame_time_spikes, capture.dropped_frames, capture.average_cpu_busy_ms,
+        capture.average_gpu_time_ms, capture.average_display_latency_ms,
         capture.capture_seconds, capture.csv_path
     ]).map_err(|err| err.to_string())?;
     Ok(())

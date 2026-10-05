@@ -336,6 +336,7 @@ fn restore_everything(state: State<AppState>) -> Result<usize, String> {
 fn export_report(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
     let machine = state.monitor.snapshot(&custom_games(&state)?);
     let probe = measure(5, Duration::from_millis(500));
+    let frame_captures = storage::frame_history(&*state.db.lock().map_err(|err| err.to_string())?)?;
     let active_changes = storage::journal(&*state.db.lock().map_err(|err| err.to_string())?)?.len();
     let report = json!({
         "app": "vyre", "version": env!("CARGO_PKG_VERSION"), "createdAt": Utc::now().to_rfc3339(),
@@ -343,6 +344,7 @@ fn export_report(app: tauri::AppHandle, state: State<AppState>) -> Result<String
         "system": { "cpuPercent": machine.cpu_percent, "ramPercent": machine.ram_percent, "ramUsedGb": machine.ram_used_gb, "ramTotalGb": machine.ram_total_gb, "downloadMbps": machine.download_mbps, "uploadMbps": machine.upload_mbps },
         "detectedGames": machine.games.iter().map(|game| &game.name).collect::<Vec<_>>(),
         "topProcesses": machine.top_processes,
+        "frameCaptures": frame_captures,
         "activeTemporaryChanges": active_changes,
         "limitations": ["Probe target is not a game server", "FPS is available only through an on-demand 15-second capture; no continuous overlay is included", "No bufferbloat test or relay nodes are available"]
     });
@@ -426,7 +428,6 @@ fn capture_game_frames(
         .args(["--process_id", &pid_arg, "--output_file"])
         .arg(&csv_path)
         .args([
-            "--exclude_dropped",
             "--timed",
             &seconds_arg,
             "--terminate_after_timed",
