@@ -8,6 +8,7 @@ pub mod relay_coordinator;
 mod relay_interop;
 pub mod relay_lifecycle;
 pub mod relay_manifest;
+pub mod relay_session;
 pub mod relay_tunnel;
 mod routing;
 mod storage;

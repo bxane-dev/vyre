@@ -26,6 +26,7 @@ base64 = "0.23.1"
 reqwest = { version = "0.13.5", features = ["stream"] }
 ipnet = "2"
 zeroize = "1"
+x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
 
 [dev-dependencies]
 boringtun = "=0.7.1"
